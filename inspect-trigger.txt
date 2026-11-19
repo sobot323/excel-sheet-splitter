@@ -1,1 +1,1 @@
-Temporary trigger for XLSX package inspection.
+Run detailed XLSX diagnostics.
