@@ -1,0 +1,13 @@
+services:
+  - type: web
+    name: excel-sheet-splitter-pdf
+    runtime: docker
+    plan: free
+    dockerfilePath: ./pdf-service/Dockerfile
+    dockerContext: .
+    healthCheckPath: /health
+    envVars:
+      - key: FRONTEND_ORIGIN
+        value: https://sobot323.github.io
+      - key: MAX_UPLOAD_MB
+        value: "100"
