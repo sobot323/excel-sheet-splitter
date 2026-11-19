@@ -231,6 +231,9 @@ footer{font-size:12px;color:#7a8494;text-align:center;margin:20px 0}
       if (sourceSheet) {
         const parsed = sourceSheet[ref];
         if (!parsed) return '';
+        // A formula without a cached result is NOT proof that the cell is blank.
+        // Treat it as unknown so it cannot accidentally activate rules such as $B10="".
+        if (parsed.f && (parsed.v === undefined || parsed.v === null || parsed.v === '')) return '\\u0000UNKNOWN';
         if (parsed.v === undefined || parsed.v === null) return '';
         if (parsed.t === 'b') return parsed.v ? 'TRUE' : 'FALSE';
         return String(parsed.v);
