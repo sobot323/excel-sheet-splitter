@@ -45,7 +45,7 @@ jobs:
             fs.writeFileSync('/tmp/cleaned.xlsx', await zip.generateAsync({type:'nodebuffer'}));
           })().catch(error => { console.error(error); process.exit(1); });
           NODE
-          node /tmp/test-cleanup.cjs
+          NODE_PATH="$GITHUB_WORKSPACE/node_modules" node /tmp/test-cleanup.cjs
           python - <<'PY'
           import zipfile, xml.etree.ElementTree as ET, posixpath
           p='/tmp/cleaned.xlsx'
