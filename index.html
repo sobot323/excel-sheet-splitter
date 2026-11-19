@@ -197,10 +197,13 @@ footer{font-size:12px;color:#7a8494;text-align:center;margin:20px 0}
     return box;
   }
   async function pdfBlob(sheet, sheetName, styleWorkbook) {
-    if(!styleWorkbook) {
-      throw new Error('Dokładniejsze odwzorowanie PDF wymaga pliku XLSX. Pliki XLS/XLSM/XLSB nie udostępniają pełnych stylów w użytym mechanizmie.');
+    let sourceSheet=styleWorkbook ? styleWorkbook.getWorksheet(sheetName) : null;
+    if(!sourceSheet) {
+      const fallbackBook=new ExcelJS.Workbook();
+      sourceSheet=fallbackBook.addWorksheet(sheetName.slice(0,31)||'Arkusz');
+      const data=XLSX.utils.sheet_to_json(sheet,{header:1,raw:false,defval:'',blankrows:true});
+      data.forEach((values,index)=>{ sourceSheet.getRow(index+1).values=[, ...values]; });
     }
-    const sourceSheet=styleWorkbook.getWorksheet(sheetName);
     if(!sourceSheet) throw new Error('Nie znaleziono arkusza do eksportu PDF: '+sheetName);
     const box=renderSheetHtml(sourceSheet,sheetName);
     try {
