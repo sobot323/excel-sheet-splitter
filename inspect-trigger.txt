@@ -1,1 +1,1 @@
-Check XML validity and calculation chain.
+Run cleanup regression test.
