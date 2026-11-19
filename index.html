@@ -179,10 +179,35 @@ li{padding:9px 11px;margin-top:6px;border:1px solid #e6eaf0;border-radius:7px;di
         const sheetNodes = Array.from(workbookDoc.getElementsByTagNameNS('*', 'sheet'));
         const selectedNode = sheetNodes.find(node => node.getAttribute('name') === sheet.name);
         if (!selectedNode) throw new Error('Nie znaleziono arkusza: ' + sheet.name);
+        const selectedSheetIndex = sheetNodes.indexOf(selectedNode);
         const selectedRelId = selectedNode.getAttributeNS('http://schemas.openxmlformats.org/officeDocument/2006/relationships', 'id');
+
+        // The output workbook must always contain a visible active sheet.
+        selectedNode.removeAttribute('state');
 
         sheetNodes.forEach(node => {
           if (node !== selectedNode) node.parentNode.removeChild(node);
+        });
+
+        // Reset workbook view indexes because the remaining sheet is now tab 0.
+        Array.from(workbookDoc.getElementsByTagNameNS('*', 'workbookView')).forEach(view => {
+          view.setAttribute('activeTab', '0');
+          view.setAttribute('firstSheet', '0');
+        });
+
+        // Keep global names and names belonging to the retained sheet only.
+        // localSheetId is zero-based and must be updated to the new one-sheet index.
+        const definedNamesContainers = Array.from(workbookDoc.getElementsByTagNameNS('*', 'definedNames'));
+        definedNamesContainers.forEach(container => {
+          Array.from(container.children).forEach(nameNode => {
+            if (!nameNode.hasAttribute('localSheetId')) return;
+            if (Number(nameNode.getAttribute('localSheetId')) !== selectedSheetIndex) {
+              container.removeChild(nameNode);
+            } else {
+              nameNode.setAttribute('localSheetId', '0');
+            }
+          });
+          if (!container.children.length) container.parentNode.removeChild(container);
         });
 
         // Keep the original worksheet XML and every style/shared-string/theme part
@@ -194,10 +219,6 @@ li{padding:9px 11px;margin-top:6px;border:1px solid #e6eaf0;border-radius:7px;di
             node.parentNode.removeChild(node);
           }
         });
-
-        // Defined names can refer to sheets that are no longer present.
-        const definedNames = workbookDoc.getElementsByTagNameNS('*', 'definedNames');
-        if (definedNames.length) definedNames[0].parentNode.removeChild(definedNames[0]);
 
         zip.file('xl/workbook.xml', new XMLSerializer().serializeToString(workbookDoc));
         zip.file('xl/_rels/workbook.xml.rels', new XMLSerializer().serializeToString(relsDoc));
