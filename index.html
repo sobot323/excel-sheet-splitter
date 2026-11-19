@@ -25,15 +25,16 @@ footer{font-size:12px;color:#7a8494;text-align:center;margin:20px 0}
 <div class="wrap">
 <header><h1>Excel Sheet Splitter</h1><p>Podziel skoroszyt na osobne pliki dla każdego arkusza. Każdy arkusz otrzyma wersję Excel i PDF, a wszystkie pliki pobierzesz w jednej paczce ZIP.</p></header>
 <main class="panel">
-<div class="drop" id="drop"><strong>Wybierz plik Excel lub przeciągnij go tutaj</strong><span class="muted">Obsługiwane formaty: XLSX, XLS, XLSM, XLSB</span><input id="file" type="file" accept=".xlsx,.xls,.xlsm,.xlsb"></div>
+<div class="drop" id="drop"><strong>Wybierz plik Excel lub przeciągnij go tutaj</strong><span class="muted">Obsługiwane formaty: XLSX, XLS, XLSM, XLSB. Najlepsze zachowanie formatowania dla XLSX.</span><input id="file" type="file" accept=".xlsx,.xls,.xlsm,.xlsb"></div>
 <div class="field"><label for="suffix">Tekst dodawany do nazw plików</label><input id="suffix" type="text"></div>
 <div id="preview" class="status" aria-live="polite">Nie wybrano pliku.</div>
 <button id="run" disabled>Podziel i pobierz ZIP</button>
-<div class="note">Plik jest przetwarzany lokalnie w Twojej przeglądarce. Nie wysyłamy go na serwer. PDF zawiera dane arkusza w formie tabeli. Złożone formatowanie wydruku, wykresy, makra i niektóre obiekty Excela nie są przenoszone do PDF.</div>
+<div class="note">Plik jest przetwarzany lokalnie w Twojej przeglądarce. Dla plików XLSX kopiujemy typowe formatowanie komórek, szerokości kolumn, wysokości wierszy i scalone komórki. Wykresy, obrazy, makra i niektóre zaawansowane elementy mogą nie zostać przeniesione. Pliki XLS/XLSM/XLSB są eksportowane dotychczasową metodą, która może nie zachować formatowania. PDF zawiera dane arkusza w formie tabeli.</div>
 </main>
 <footer>Excel Sheet Splitter</footer>
 </div>
 <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/exceljs@4.4.0/dist/exceljs.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/pdfmake@0.2.20/build/pdfmake.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/pdfmake@0.2.20/build/vfs_fonts.js"></script>
@@ -46,6 +47,7 @@ footer{font-size:12px;color:#7a8494;text-align:center;margin:20px 0}
   const runButton = document.getElementById('run');
   let selectedFile = null;
   let workbook = null;
+  let styledWorkbook = null;
 
   const now = new Date();
   suffixInput.value = '_karta_pracy_' + String(now.getMonth()+1).padStart(2,'0') + '_' + now.getFullYear();
@@ -79,11 +81,71 @@ footer{font-size:12px;color:#7a8494;text-align:center;margin:20px 0}
     try{
       const data=await file.arrayBuffer();
       workbook=XLSX.read(data,{type:'array',cellStyles:true,cellFormula:true,cellDates:true});
+      styledWorkbook=null;
+      if(/\.xlsx$/i.test(file.name) && window.ExcelJS){
+        styledWorkbook=new ExcelJS.Workbook();
+        await styledWorkbook.xlsx.load(data);
+      }
       if(!workbook.SheetNames.length)throw new Error('Plik nie zawiera arkuszy.');
       runButton.disabled=false;showPreview();
-    }catch(err){workbook=null;selectedFile=null;preview.textContent='Nie udało się odczytać pliku: '+err.message;}
+    }catch(err){workbook=null;styledWorkbook=null;selectedFile=null;preview.textContent='Nie udało się odczytać pliku: '+err.message;}
   }
   suffixInput.addEventListener('input',showPreview);
+
+
+  function clonePlain(value) {
+    return value == null ? value : JSON.parse(JSON.stringify(value));
+  }
+
+  async function exportStyledSheet(sourceSheet) {
+    const outBook = new ExcelJS.Workbook();
+    outBook.creator = 'Excel Sheet Splitter';
+    outBook.created = new Date();
+    const targetSheet = outBook.addWorksheet(sourceSheet.name, {
+      properties: clonePlain(sourceSheet.properties),
+      pageSetup: clonePlain(sourceSheet.pageSetup),
+      views: clonePlain(sourceSheet.views),
+      state: sourceSheet.state
+    });
+
+    // Copy column dimensions and default column styles.
+    sourceSheet.columns.forEach((column, index) => {
+      const targetColumn = targetSheet.getColumn(index + 1);
+      if (column.width != null) targetColumn.width = column.width;
+      if (column.hidden != null) targetColumn.hidden = column.hidden;
+      if (column.outlineLevel != null) targetColumn.outlineLevel = column.outlineLevel;
+      if (column.style) targetColumn.style = clonePlain(column.style);
+    });
+
+    // Copy cell values and formatting.
+    sourceSheet.eachRow({ includeEmpty: true }, sourceRow => {
+      const targetRow = targetSheet.getRow(sourceRow.number);
+      if (sourceRow.height != null) targetRow.height = sourceRow.height;
+      targetRow.hidden = sourceRow.hidden;
+      targetRow.outlineLevel = sourceRow.outlineLevel;
+      sourceRow.eachCell({ includeEmpty: true }, sourceCell => {
+        if (sourceCell.isMerged && sourceCell.master !== sourceCell) return;
+        const targetCell = targetRow.getCell(sourceCell.col);
+        targetCell.value = clonePlain(sourceCell.value);
+        if (sourceCell.style) targetCell.style = clonePlain(sourceCell.style);
+        if (sourceCell.numFmt) targetCell.numFmt = sourceCell.numFmt;
+        if (sourceCell.note) targetCell.note = clonePlain(sourceCell.note);
+      });
+    });
+
+    // Recreate merged cells after values have been copied.
+    const merges = sourceSheet.model.merges || [];
+    merges.forEach(range => targetSheet.mergeCells(range));
+
+    if (sourceSheet.autoFilter) targetSheet.autoFilter = clonePlain(sourceSheet.autoFilter);
+    if (sourceSheet.headerFooter) targetSheet.headerFooter = clonePlain(sourceSheet.headerFooter);
+    if (sourceSheet.conditionalFormattings?.length) {
+      targetSheet.conditionalFormattings = clonePlain(sourceSheet.conditionalFormattings);
+    }
+
+    const buffer = await outBook.xlsx.writeBuffer();
+    return buffer;
+  }
 
   function pdfBlob(sheet, sheetName) {
     const rows=XLSX.utils.sheet_to_json(sheet,{header:1,raw:false,defval:'',blankrows:true});
@@ -123,9 +185,15 @@ footer{font-size:12px;color:#7a8494;text-align:center;margin:20px 0}
       for(let i=0;i<workbook.SheetNames.length;i++){
         const sheetName=workbook.SheetNames[i];
         const outputName=uniqueName(safeName(safeName(sheetName)+suffixInput.value),used);
-        const outBook=XLSX.utils.book_new();
-        XLSX.utils.book_append_sheet(outBook,workbook.Sheets[sheetName],sheetName.slice(0,31)||'Arkusz');
-        const xlsxData=XLSX.write(outBook,{bookType:'xlsx',type:'array',cellStyles:true,compression:true});
+        let xlsxData;
+        if (styledWorkbook) {
+          const styledSheet=styledWorkbook.getWorksheet(sheetName);
+          xlsxData=await exportStyledSheet(styledSheet);
+        } else {
+          const outBook=XLSX.utils.book_new();
+          XLSX.utils.book_append_sheet(outBook,workbook.Sheets[sheetName],sheetName.slice(0,31)||'Arkusz');
+          xlsxData=XLSX.write(outBook,{bookType:'xlsx',type:'array',cellStyles:true,compression:true});
+        }
         zip.file(outputName+'.xlsx',xlsxData);
         const pdf=await pdfBlob(workbook.Sheets[sheetName],sheetName);
         zip.file(outputName+'.pdf',pdf);
