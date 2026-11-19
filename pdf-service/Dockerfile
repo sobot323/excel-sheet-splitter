@@ -1,7 +1,7 @@
 FROM python:3.11-slim-bookworm
 
 ENV PYTHONUNBUFFERED=1
-ENV PYTHONDONTWRITEBYTECODE=1
+ENV PYTHONDONTWRITEBYTECODE=1\nENV LD_LIBRARY_PATH=/usr/lib/libreoffice/program
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libreoffice-calc \
