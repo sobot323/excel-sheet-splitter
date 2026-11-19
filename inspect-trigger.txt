@@ -1,1 +1,1 @@
-Retry cleanup regression test.
+Re-run cleanup regression test.
