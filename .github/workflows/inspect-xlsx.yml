@@ -1,0 +1,83 @@
+name: Inspect XLSX packages
+on:
+  push:
+    paths:
+      - "inspect-trigger.txt"
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compare original and generated XLSX internals
+        run: |
+          python - <<'PY'
+          import zipfile, xml.etree.ElementTree as ET, posixpath, difflib
+          from pathlib import Path
+
+          files = {
+              "original": Path("test-files/oryginal.xlsx"),
+              "generated": Path("test-files/wygenerowany.xlsx"),
+          }
+          packages = {}
+          for name, path in files.items():
+              print(f"\\n===== {name.upper()} ({path.stat().st_size} bytes) =====")
+              with zipfile.ZipFile(path) as z:
+                  bad = z.testzip()
+                  print("ZIP integrity:", "OK" if bad is None else f"BAD: {bad}")
+                  names = set(z.namelist())
+                  packages[name] = (z, names)
+                  print("Entries:", len(names))
+                  for n in sorted(names):
+                      print(" ", n)
+                  for n in ("xl/workbook.xml", "xl/_rels/workbook.xml.rels", "[Content_Types].xml"):
+                      if n in names:
+                          data = z.read(n)
+                          print(f"\\n--- {n} ({len(data)} bytes) ---")
+                          try:
+                              root = ET.fromstring(data)
+                              print(ET.tostring(root, encoding="unicode"))
+                          except Exception as e:
+                              print("XML PARSE ERROR:", repr(e))
+
+                  print("\\n--- Relationship target checks ---")
+                  for relfile in sorted(x for x in names if x.endswith(".rels")):
+                      base = posixpath.dirname(posixpath.dirname(relfile))
+                      try:
+                          root = ET.fromstring(z.read(relfile))
+                      except Exception as e:
+                          print("BAD RELS XML", relfile, repr(e)); continue
+                      for rel in root:
+                          target = rel.attrib.get("Target", "")
+                          mode = rel.attrib.get("TargetMode", "")
+                          if mode == "External" or not target:
+                              continue
+                          resolved = posixpath.normpath(posixpath.join(base, target))
+                          if resolved not in names:
+                              print("MISSING TARGET", relfile, "->", target, "=>", resolved)
+
+                  print("\\n--- Content type override checks ---")
+                  try:
+                      root = ET.fromstring(z.read("[Content_Types].xml"))
+                      for el in root:
+                          part = el.attrib.get("PartName", "").lstrip("/")
+                          if part and part not in names:
+                              print("MISSING OVERRIDE PART", part)
+                  except Exception as e:
+                      print("CONTENT TYPES ERROR", repr(e))
+
+          a, an = packages["original"]
+          b, bn = packages["generated"]
+          print("\\n===== PACKAGE COMPARISON =====")
+          print("Only original:", *sorted(an-bn), sep="\\n  ")
+          print("Only generated:", *sorted(bn-an), sep="\\n  ")
+          for n in ("xl/workbook.xml", "xl/_rels/workbook.xml.rels", "[Content_Types].xml"):
+              if n in an and n in bn:
+                  aa = a.read(n).decode("utf-8", "replace").splitlines()
+                  bb = b.read(n).decode("utf-8", "replace").splitlines()
+                  diff = list(difflib.unified_diff(aa, bb, fromfile="original/"+n, tofile="generated/"+n, lineterm=""))
+                  print(f"\\n--- DIFF {n} ---")
+                  print("\\n".join(diff) if diff else "NO DIFFERENCE")
+          PY
