@@ -196,7 +196,7 @@ footer{font-size:12px;color:#7a8494;text-align:center;margin:20px 0}
     return new XMLSerializer().serializeToString(doc);
   }
 
-  function freezeConditionalFills(sheetXmlText, stylesXmlText, sharedStrings) {
+  function freezeConditionalFills(sheetXmlText, stylesXmlText, sharedStrings, sourceSheet) {
     const parser = new DOMParser();
     const sheetDoc = parser.parseFromString(sheetXmlText, 'application/xml');
     const stylesDoc = parser.parseFromString(stylesXmlText, 'application/xml');
@@ -226,6 +226,15 @@ footer{font-size:12px;color:#7a8494;text-align:center;margin:20px 0}
     const styleCache = new Map();
     const fillKey = node => node ? new XMLSerializer().serializeToString(node) : '';
     const getCellText = (ref, shared) => {
+      // Prefer SheetJS values: it resolves shared strings and cached formula results.
+      // A missing cell is blank only when SheetJS also confirms there is no value.
+      if (sourceSheet) {
+        const parsed = sourceSheet[ref];
+        if (!parsed) return '';
+        if (parsed.v === undefined || parsed.v === null) return '';
+        if (parsed.t === 'b') return parsed.v ? 'TRUE' : 'FALSE';
+        return String(parsed.v);
+      }
       const cell = cells.get(ref);
       if (!cell) return '';
       const type = cell.getAttribute('t') || '';
@@ -367,7 +376,7 @@ footer{font-size:12px;color:#7a8494;text-align:center;margin:20px 0}
           Array.from(si.getElementsByTagNameNS('*','t')).map(t=>t.textContent||'').join('')
         );
       }
-      const frozen=freezeConditionalFills(sheetXml, await stylesFile.async('string'), sharedStrings);
+      const frozen=freezeConditionalFills(sheetXml, await stylesFile.async('string'), sharedStrings, workbook.Sheets[sheetName]);
       sheetXml=frozen.sheetXml;
       zip.file('xl/styles.xml', frozen.stylesXml);
     }
