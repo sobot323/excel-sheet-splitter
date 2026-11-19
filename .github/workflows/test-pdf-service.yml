@@ -1,0 +1,32 @@
+name: Test PDF conversion service
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "pdf-service/**"
+      - ".github/workflows/test-pdf-service.yml"
+  workflow_dispatch:
+
+jobs:
+  docker-smoke-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build PDF service image
+        run: docker build -f pdf-service/Dockerfile -t excel-sheet-splitter-pdf .
+      - name: Start service
+        run: docker run -d --name pdf-service -p 10000:10000 excel-sheet-splitter-pdf
+      - name: Check health endpoint
+        run: |
+          for attempt in $(seq 1 30); do
+            if curl --fail http://127.0.0.1:10000/health; then
+              exit 0
+            fi
+            sleep 2
+          done
+          docker logs pdf-service
+          exit 1
+      - name: Show service logs
+        if: always()
+        run: docker logs pdf-service || true
