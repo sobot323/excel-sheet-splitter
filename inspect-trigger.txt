@@ -1,1 +1,1 @@
-Inspect worksheet XML lengths.
+Check XML validity and calculation chain.
