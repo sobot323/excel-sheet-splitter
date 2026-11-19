@@ -1,0 +1,50 @@
+name: Diagnose XLSX package
+on:
+  push:
+    paths:
+      - ".github/workflows/diagnose-xlsx.yml"
+      - "test-files/oryginal.xlsx"
+      - "test-files/wygenerowany.xlsx"
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compare XLSX packages
+        run: |
+          python - <<'PY'
+          import zipfile, hashlib, xml.etree.ElementTree as ET, json, os
+          files = ["test-files/oryginal.xlsx", "test-files/wygenerowany.xlsx"]
+          report = []
+          for path in files:
+              item = {"file": path}
+              with zipfile.ZipFile(path) as z:
+                  names = z.namelist()
+                  item["entries"] = len(names)
+                  item["bad_zip_members"] = z.testzip()
+                  item["parts"] = []
+                  for n in names:
+                      data = z.read(n)
+                      rec = {"name": n, "size": len(data), "sha256": hashlib.sha256(data).hexdigest()}
+                      if n.endswith(".xml") or n.endswith(".rels"):
+                          try:
+                              root = ET.fromstring(data)
+                              rec["xml_root"] = root.tag
+                          except Exception as e:
+                              rec["xml_error"] = str(e)
+                      item["parts"].append(rec)
+                  for n in ["[Content_Types].xml","xl/workbook.xml","xl/_rels/workbook.xml.rels"]:
+                      if n in names:
+                          item[n] = z.read(n).decode("utf-8", "replace")
+              report.append(item)
+          with open("xlsx-diagnostic.json","w") as f:
+              json.dump(report,f,ensure_ascii=False,indent=2)
+          print(json.dumps([{"file":x["file"],"entries":x["entries"],"bad_zip_members":x["bad_zip_members"],"parts":len(x["parts"])} for x in report],ensure_ascii=False,indent=2))
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: xlsx-diagnostic
+          path: xlsx-diagnostic.json
