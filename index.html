@@ -162,10 +162,10 @@ li{padding:9px 11px;margin-top:6px;border:1px solid #e6eaf0;border-radius:7px;di
         const outputName = uniqueName(cleanName(sourceSheet.name + suffixInput.value), used);
         const outputBook = new ExcelJS.Workbook();
 
-        // Copy the complete worksheet model first: dimensions, merges, views,
-        // page setup, conditional formatting and other worksheet-level settings.
+        // Create a clean worksheet and copy supported properties explicitly.
+        // Assigning sourceSheet.model wholesale can make ExcelJS call forEach()
+        // on nullable model fields in some workbooks.
         const targetSheet = outputBook.addWorksheet(sourceSheet.name);
-        targetSheet.model = JSON.parse(JSON.stringify(sourceSheet.model));
         targetSheet.name = sourceSheet.name;
 
         // Copy cell values and styles explicitly. ExcelJS worksheet-model cloning
@@ -187,7 +187,7 @@ li{padding:9px 11px;margin-top:6px;border:1px solid #e6eaf0;border-radius:7px;di
         });
 
         // Preserve column widths, visibility and column-level styles.
-        sourceSheet.columns.forEach((sourceColumn, index) => {
+        (sourceSheet.columns || []).forEach((sourceColumn, index) => {
           const targetColumn = targetSheet.getColumn(index + 1);
           if (sourceColumn.width !== undefined) targetColumn.width = sourceColumn.width;
           targetColumn.hidden = sourceColumn.hidden;
@@ -211,7 +211,7 @@ li{padding:9px 11px;margin-top:6px;border:1px solid #e6eaf0;border-radius:7px;di
         if (sourceSheet.dataValidations) {
           targetSheet.dataValidations = JSON.parse(JSON.stringify(sourceSheet.dataValidations));
         }
-        if (sourceSheet.conditionalFormattings) {
+        if (Array.isArray(sourceSheet.conditionalFormattings) && sourceSheet.conditionalFormattings.length) {
           targetSheet.conditionalFormattings = JSON.parse(JSON.stringify(sourceSheet.conditionalFormattings));
         }
 
