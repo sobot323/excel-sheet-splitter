@@ -57,9 +57,12 @@ li{padding:9px 11px;margin-top:6px;border:1px solid #e6eaf0;border-radius:7px;di
   const suffixInput = document.getElementById('suffix');
   const status = document.getElementById('status');
   const runButton = document.getElementById('run');
+  const pdfButton = document.getElementById('pdf-run');
+  const PDF_API_URL = 'https://excel-sheet-splitter-pdf.onrender.com/api/pdf';
   let workbook = null;
   let sourceName = '';
-  let sourceArrayBuffer = null;\n  let sourceFile = null;
+  let sourceArrayBuffer = null;
+  let sourceFile = null;
 
   const date = new Date();
   suffixInput.value = '_karta_pracy_' +
@@ -108,6 +111,8 @@ li{padding:9px 11px;margin-top:6px;border:1px solid #e6eaf0;border-radius:7px;di
     }
     runButton.disabled = true;
     workbook = null;
+    sourceFile = null;
+    pdfButton.disabled = true;
     status.textContent = 'Wczytywanie pliku…';
     fileName.textContent = file.name;
     try {
@@ -127,8 +132,10 @@ li{padding:9px 11px;margin-top:6px;border:1px solid #e6eaf0;border-radius:7px;di
         }))
       };
       sourceArrayBuffer = data;
+      sourceFile = file;
       sourceName = file.name.replace(/\\.[^.]+$/, '');
       runButton.disabled = false;
+      pdfButton.disabled = false;
       renderPreview();
     } catch (error) {
       status.textContent = 'Nie udało się odczytać pliku: ' + error.message;
