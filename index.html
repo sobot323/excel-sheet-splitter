@@ -29,7 +29,7 @@ footer{font-size:12px;color:#7a8494;text-align:center;margin:20px 0}
 <div class="field"><label for="suffix">Tekst dodawany do nazw plików</label><input id="suffix" type="text"></div>
 <div id="preview" class="status" aria-live="polite">Nie wybrano pliku.</div>
 <button id="run" disabled>Podziel i pobierz ZIP</button>
-<div class="note">Plik jest przetwarzany lokalnie w Twojej przeglądarce. Dla plików XLSX kopiujemy typowe formatowanie komórek, szerokości kolumn, wysokości wierszy i scalone komórki. Wykresy, obrazy, makra i niektóre zaawansowane elementy mogą nie zostać przeniesione. Pliki XLS/XLSM/XLSB są eksportowane dotychczasową metodą, która może nie zachować formatowania. PDF zawiera dane arkusza w formie tabeli.</div>
+<div class="note">Plik jest przetwarzany lokalnie w Twojej przeglądarce. Dla plików XLSX zachowujemy skoroszyt źródłowy i usuwamy z niego pozostałe arkusze, aby lepiej zachować motyw oraz formatowanie. PDF przenosi podstawowe style komórek: kolory, czcionki, wyrównanie i obramowania. Wykresy, obrazy, makra i niektóre zaawansowane elementy mogą nie zostać przeniesione. Pliki XLS/XLSM/XLSB są eksportowane dotychczasową metodą, która może nie zachować formatowania. PDF zawiera dane arkusza w formie tabeli.</div>
 </main>
 <footer>Excel Sheet Splitter</footer>
 </div>
@@ -48,6 +48,7 @@ footer{font-size:12px;color:#7a8494;text-align:center;margin:20px 0}
   let selectedFile = null;
   let workbook = null;
   let styledWorkbook = null;
+  let sourceArrayBuffer = null;
 
   const now = new Date();
   suffixInput.value = '_karta_pracy_' + String(now.getMonth()+1).padStart(2,'0') + '_' + now.getFullYear();
@@ -80,6 +81,7 @@ footer{font-size:12px;color:#7a8494;text-align:center;margin:20px 0}
     selectedFile=file;runButton.disabled=true;preview.textContent='Wczytywanie pliku…';
     try{
       const data=await file.arrayBuffer();
+      sourceArrayBuffer=data.slice(0);
       workbook=XLSX.read(data,{type:'array',cellStyles:true,cellFormula:true,cellDates:true});
       styledWorkbook=null;
       if(/\.xlsx$/i.test(file.name) && window.ExcelJS){
@@ -97,84 +99,114 @@ footer{font-size:12px;color:#7a8494;text-align:center;margin:20px 0}
     return value == null ? value : JSON.parse(JSON.stringify(value));
   }
 
-  async function exportStyledSheet(sourceSheet) {
+  async function exportStyledSheet(sheetName) {
+    // Start from the original workbook instead of rebuilding a sheet.
+    // This keeps the source theme, which is needed for theme-based fill colors.
     const outBook = new ExcelJS.Workbook();
-    outBook.creator = 'Excel Sheet Splitter';
-    outBook.created = new Date();
-    const targetSheet = outBook.addWorksheet(sourceSheet.name, {
-      properties: clonePlain(sourceSheet.properties),
-      pageSetup: clonePlain(sourceSheet.pageSetup),
-      views: clonePlain(sourceSheet.views),
-      state: sourceSheet.state
-    });
-
-    // Copy column dimensions and default column styles.
-    (sourceSheet.columns || []).forEach((column, index) => {
-      const targetColumn = targetSheet.getColumn(index + 1);
-      if (column.width != null) targetColumn.width = column.width;
-      if (column.hidden != null) targetColumn.hidden = column.hidden;
-      if (column.outlineLevel != null) targetColumn.outlineLevel = column.outlineLevel;
-      if (column.style) targetColumn.style = clonePlain(column.style);
-    });
-
-    // Copy cell values and formatting.
-    sourceSheet.eachRow({ includeEmpty: true }, sourceRow => {
-      const targetRow = targetSheet.getRow(sourceRow.number);
-      if (sourceRow.height != null) targetRow.height = sourceRow.height;
-      targetRow.hidden = sourceRow.hidden;
-      targetRow.outlineLevel = sourceRow.outlineLevel;
-      sourceRow.eachCell({ includeEmpty: true }, sourceCell => {
-        if (sourceCell.isMerged && sourceCell.master !== sourceCell) return;
-        const targetCell = targetRow.getCell(sourceCell.col);
-        targetCell.value = clonePlain(sourceCell.value);
-        if (sourceCell.style) targetCell.style = clonePlain(sourceCell.style);
-        if (sourceCell.numFmt) targetCell.numFmt = sourceCell.numFmt;
-        if (sourceCell.note) targetCell.note = clonePlain(sourceCell.note);
-      });
-    });
-
-    // Recreate merged cells after values have been copied.
-    const merges = sourceSheet.model.merges || [];
-    (merges || []).forEach(range => targetSheet.mergeCells(range));
-
-    if (sourceSheet.autoFilter) targetSheet.autoFilter = clonePlain(sourceSheet.autoFilter);
-    if (sourceSheet.headerFooter) targetSheet.headerFooter = clonePlain(sourceSheet.headerFooter);
-    if (Array.isArray(sourceSheet.conditionalFormattings) && sourceSheet.conditionalFormattings.length) {
-      targetSheet.conditionalFormattings = clonePlain(sourceSheet.conditionalFormattings);
+    await outBook.xlsx.load(sourceArrayBuffer.slice(0));
+    const keepSheet = outBook.getWorksheet(sheetName);
+    if (!keepSheet) throw new Error('Nie znaleziono arkusza: ' + sheetName);
+    for (const sheet of [...outBook.worksheets]) {
+      if (sheet.id !== keepSheet.id) outBook.removeWorksheet(sheet.id);
     }
-
-    const buffer = await outBook.xlsx.writeBuffer();
-    return buffer;
+    return await outBook.xlsx.writeBuffer();
   }
 
-  function pdfBlob(sheet, sheetName) {
-    const rows=XLSX.utils.sheet_to_json(sheet,{header:1,raw:false,defval:'',blankrows:true});
-    const nonEmpty=rows.filter(row=>row.some(cell=>String(cell??'').trim()!==''));
-    const columnCount=Math.max(1,...nonEmpty.map(row=>row.length));
-    const body=nonEmpty.length?nonEmpty.map(row=>{
-      const cells=Array.from({length:columnCount},(_,i)=>String(row[i]??''));
-      return cells.map(value=>({text:value,style:nonEmpty.indexOf(row)===0?'tableHeader':'tableCell',alignment:'left'}));
-    }):[[{text:'Arkusz nie zawiera danych.',colSpan:1}]];
-    const definition={
+  const indexedColors = [
+    '000000','FFFFFF','FF0000','00FF00','0000FF','FFFF00','FF00FF','00FFFF',
+    '000000','FFFFFF','FF0000','00FF00','0000FF','FFFF00','FF00FF','00FFFF',
+    '800000','008000','000080','808000','800080','008080','C0C0C0','808080',
+    '9999FF','993366','FFFFCC','CCFFFF','660066','FF8080','0066CC','CCCCFF',
+    '000080','FF00FF','FFFF00','00FFFF','800080','800000','008080','0000FF',
+    '00CCFF','CCFFFF','CCFFCC','FFFF99','99CCFF','FF99CC','CC99FF','FFCC99',
+    '3366FF','33CCCC','99CC00','FFCC00','FF9900','FF6600','666699','969696',
+    '003366','339966','003300','333300','993300','993366','333399','333333'
+  ];
+  const themeColors = ['FFFFFF','000000','E7E6E6','44546A','4472C4','ED7D31','A5A5A5','FFC000','5B9BD5','70AD47'];
+
+  function tintHex(hex, tint) {
+    if (tint == null || tint === 0) return hex;
+    const amount = Math.max(-1, Math.min(1, Number(tint)));
+    const rgb = hex.match(/[0-9a-f]{2}/gi).map(v => parseInt(v,16));
+    const adjusted = rgb.map(v => Math.round(amount < 0 ? v * (1 + amount) : v * (1 - amount) + 255 * amount));
+    return adjusted.map(v => v.toString(16).padStart(2,'0')).join('').toUpperCase();
+  }
+  function pdfColor(color, fallback) {
+    if (!color) return fallback;
+    let hex = null;
+    if (color.argb) hex = String(color.argb).slice(-6);
+    else if (color.rgb) hex = String(color.rgb).replace(/^#/,'').slice(-6);
+    else if (Number.isInteger(color.indexed)) hex = indexedColors[color.indexed] || null;
+    else if (Number.isInteger(color.theme)) hex = themeColors[color.theme] || null;
+    if (!hex || !/^[0-9a-f]{6}$/i.test(hex)) return fallback;
+    return '#' + tintHex(hex, color.tint).toLowerCase();
+  }
+  function pdfCellStyle(cell) {
+    const result = {fontSize: 7, margin: [3,3,3,3], alignment: 'left'};
+    const font = cell && cell.font ? cell.font : {};
+    if (font.bold) result.bold = true;
+    if (font.italic) result.italics = true;
+    if (font.underline) result.decoration = 'underline';
+    if (font.strike) result.decoration = result.decoration ? [result.decoration,'lineThrough'] : 'lineThrough';
+    if (font.size) result.fontSize = Math.max(5, Math.min(28, Number(font.size)));
+    const fontColor = pdfColor(font.color, null);
+    if (fontColor) result.color = fontColor;
+
+    const fill = cell && cell.fill;
+    if (fill && fill.type === 'pattern' && fill.pattern === 'solid') {
+      const fillColor = pdfColor(fill.fgColor || fill.bgColor, null);
+      if (fillColor) result.fillColor = fillColor;
+    }
+    const alignment = cell && cell.alignment ? cell.alignment : {};
+    if (['left','center','right','justify'].includes(alignment.horizontal)) result.alignment = alignment.horizontal;
+    if (['top','middle','bottom'].includes(alignment.vertical)) result.valign = alignment.vertical;
+    if (alignment.wrapText === false) result.noWrap = true;
+
+    const border = cell && cell.border;
+    if (border) {
+      const sides = ['left','top','right','bottom'];
+      const widths = sides.map(side => {
+        const line = border[side];
+        if (!line || !line.style) return 0;
+        return ({hair:0.3, thin:0.5, dotted:0.5, dashed:0.6, dashDot:0.6, medium:1, mediumDashed:1, double:1.2, thick:1.5}[line.style] || 0.5);
+      });
+      const colors = sides.map(side => pdfColor(border[side] && border[side].color, '#9AA3B2'));
+      if (widths.some(v => v > 0)) {
+        result.border = widths.map(v => v > 0);
+        result.borderWidth = widths;
+        result.borderColor = colors;
+      }
+    }
+    return result;
+  }
+  function pdfBlob(sheet, sheetName, styledSheet) {
+    const rows = XLSX.utils.sheet_to_json(sheet,{header:1,raw:false,defval:'',blankrows:true});
+    const nonEmpty = rows.map((row,index)=>({row,index})).filter(item =>
+      item.row.some(cell => String(cell ?? '').trim() !== '')
+    );
+    const columnCount = Math.max(1,...nonEmpty.map(item=>item.row.length));
+    const body = nonEmpty.length ? nonEmpty.map(({row,index}) => {
+      const cells = Array.from({length:columnCount},(_,i)=>String(row[i] ?? ''));
+      return cells.map((value,colIndex) => {
+        const excelCell = styledSheet ? styledSheet.getRow(index+1).getCell(colIndex+1) : null;
+        return {text:value, ...pdfCellStyle(excelCell)};
+      });
+    }) : [[{text:'Arkusz nie zawiera danych.',colSpan:1}]];
+    const definition = {
       pageSize:'A4',
       pageOrientation:columnCount>6?'landscape':'portrait',
       pageMargins:[24,42,24,32],
       defaultStyle:{font:'Roboto',fontSize:8},
       content:[
         {text:sheetName,style:'title',margin:[0,0,0,12]},
-        {table:{headerRows:nonEmpty.length?1:0,keepWithHeaderRows:1,widths:Array(columnCount).fill('*'),body},layout:'lightHorizontalLines'}
+        {table:{headerRows:0,widths:Array(columnCount).fill('*'),body},layout:'noBorders'}
       ],
-      styles:{
-        title:{fontSize:14,bold:true},
-        tableHeader:{bold:true,fontSize:8,fillColor:'#e9eef7',color:'#172033',margin:[3,4]},
-        tableCell:{fontSize:7,margin:[3,3]}
-      }
+      styles:{title:{fontSize:14,bold:true,color:'#172033'}}
     };
     return new Promise((resolve,reject)=>{
       try{pdfMake.createPdf(definition).getBlob(resolve);}catch(error){reject(error);}
     });
   }
-
   runButton.addEventListener('click',async()=>{
     if(!selectedFile||!workbook)return;
     runButton.disabled=true;preview.textContent='Tworzenie plików Excel i PDF…';
@@ -188,14 +220,14 @@ footer{font-size:12px;color:#7a8494;text-align:center;margin:20px 0}
         let xlsxData;
         if (styledWorkbook) {
           const styledSheet=styledWorkbook.getWorksheet(sheetName);
-          xlsxData=await exportStyledSheet(styledSheet);
+          xlsxData=await exportStyledSheet(sheetName);
         } else {
           const outBook=XLSX.utils.book_new();
           XLSX.utils.book_append_sheet(outBook,workbook.Sheets[sheetName],sheetName.slice(0,31)||'Arkusz');
           xlsxData=XLSX.write(outBook,{bookType:'xlsx',type:'array',cellStyles:true,compression:true});
         }
         zip.file(outputName+'.xlsx',xlsxData);
-        const pdf=await pdfBlob(workbook.Sheets[sheetName],sheetName);
+        const pdf=await pdfBlob(workbook.Sheets[sheetName],sheetName,styledSheet);
         zip.file(outputName+'.pdf',pdf);
         preview.textContent='Przetworzono arkuszy: '+(i+1)+' z '+workbook.SheetNames.length;
       }
