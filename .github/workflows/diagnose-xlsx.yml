@@ -36,7 +36,7 @@ jobs:
                           except Exception as e:
                               rec["xml_error"] = str(e)
                       item["parts"].append(rec)
-                  for n in ["[Content_Types].xml","xl/workbook.xml","xl/_rels/workbook.xml.rels"]:
+                  for n in ["[Content_Types].xml","xl/workbook.xml","xl/_rels/workbook.xml.rels","xl/calcChain.xml","docProps/app.xml","_rels/.rels","xl/worksheets/_rels/sheet22.xml.rels"]:
                       if n in names:
                           item[n] = z.read(n).decode("utf-8", "replace")
               report.append(item)
