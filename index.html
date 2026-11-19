@@ -48,7 +48,6 @@ li{padding:9px 11px;margin-top:6px;border:1px solid #e6eaf0;border-radius:7px;di
 <button id="run" disabled>Utwórz paczkę ZIP</button>
 </section>
 </main>
-<script src="https://cdn.jsdelivr.net/npm/exceljs@4.4.0/dist/exceljs.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>
 <script>
 (() => {
@@ -60,6 +59,7 @@ li{padding:9px 11px;margin-top:6px;border:1px solid #e6eaf0;border-radius:7px;di
   const runButton = document.getElementById('run');
   let workbook = null;
   let sourceName = '';
+  let sourceArrayBuffer = null;
 
   const date = new Date();
   suffixInput.value = '_karta_pracy_' +
@@ -85,12 +85,12 @@ li{padding:9px 11px;margin-top:6px;border:1px solid #e6eaf0;border-radius:7px;di
   function renderPreview() {
     if (!workbook) return;
     const used = new Set();
-    const rows = workbook.worksheets.map(sheet => {
+    const rows = workbook.sheets.map(sheet => {
       const name = uniqueName(cleanName(sheet.name + suffixInput.value), used);
       return '<li><span>' + escapeHtml(sheet.name) + '</span><span class="filename">' +
         escapeHtml(name + '.xlsx') + '</span></li>';
     }).join('');
-    status.innerHTML = '<strong>Liczba arkuszy: ' + workbook.worksheets.length +
+    status.innerHTML = '<strong>Liczba arkuszy: ' + workbook.sheets.length +
       '</strong><ul>' + rows + '</ul>';
   }
 
@@ -112,13 +112,22 @@ li{padding:9px 11px;margin-top:6px;border:1px solid #e6eaf0;border-radius:7px;di
     fileName.textContent = file.name;
     try {
       const data = await file.arrayBuffer();
-      const parsed = new ExcelJS.Workbook();
-      await parsed.xlsx.load(data);
-      if (!parsed.worksheets || parsed.worksheets.length === 0) {
-        throw new Error('Plik nie zawiera żadnych arkuszy.');
-      }
-      workbook = parsed;
-      sourceName = file.name.replace(/\.[^.]+$/, '');
+      const parsedZip = await JSZip.loadAsync(data);
+      const workbookXml = await parsedZip.file('xl/workbook.xml')?.async('string');
+      const relsXml = await parsedZip.file('xl/_rels/workbook.xml.rels')?.async('string');
+      if (!workbookXml || !relsXml) throw new Error('Nieprawidłowa struktura pliku XLSX.');
+      const workbookDoc = new DOMParser().parseFromString(workbookXml, 'application/xml');
+      const relsDoc = new DOMParser().parseFromString(relsXml, 'application/xml');
+      const sheetNodes = Array.from(workbookDoc.getElementsByTagNameNS('*', 'sheet'));
+      if (!sheetNodes.length) throw new Error('Plik nie zawiera żadnych arkuszy.');
+      workbook = {
+        sheets: sheetNodes.map(node => ({
+          name: node.getAttribute('name'),
+          relId: node.getAttributeNS('http://schemas.openxmlformats.org/officeDocument/2006/relationships', 'id')
+        }))
+      };
+      sourceArrayBuffer = data;
+      sourceName = file.name.replace(/\\.[^.]+$/, '');
       runButton.disabled = false;
       renderPreview();
     } catch (error) {
@@ -155,81 +164,55 @@ li{padding:9px 11px;margin-top:6px;border:1px solid #e6eaf0;border-radius:7px;di
     runButton.disabled = true;
     status.textContent = 'Tworzenie plików XLSX i paczki ZIP…';
     try {
-      const zip = new JSZip();
       const used = new Set();
-      for (let index = 0; index < workbook.worksheets.length; index++) {
-        const sourceSheet = workbook.worksheets[index];
-        const outputName = uniqueName(cleanName(sourceSheet.name + suffixInput.value), used);
-        const outputBook = new ExcelJS.Workbook();
+      const sourceZip = await JSZip.loadAsync(sourceArrayBuffer);
+      const originalWorkbookXml = await sourceZip.file('xl/workbook.xml').async('string');
+      const originalRelsXml = await sourceZip.file('xl/_rels/workbook.xml.rels').async('string');
 
-        // Create a clean worksheet and copy supported properties explicitly.
-        // Assigning sourceSheet.model wholesale can make ExcelJS call forEach()
-        // on nullable model fields in some workbooks.
-        const targetSheet = outputBook.addWorksheet(sourceSheet.name);
-        targetSheet.name = sourceSheet.name;
+      for (let index = 0; index < workbook.sheets.length; index++) {
+        const sheet = workbook.sheets[index];
+        const outputName = uniqueName(cleanName(sheet.name + suffixInput.value), used);
+        const zip = await JSZip.loadAsync(sourceArrayBuffer);
+        const parser = new DOMParser();
+        const workbookDoc = parser.parseFromString(originalWorkbookXml, 'application/xml');
+        const relsDoc = parser.parseFromString(originalRelsXml, 'application/xml');
+        const sheetNodes = Array.from(workbookDoc.getElementsByTagNameNS('*', 'sheet'));
+        const selectedNode = sheetNodes.find(node => node.getAttribute('name') === sheet.name);
+        if (!selectedNode) throw new Error('Nie znaleziono arkusza: ' + sheet.name);
+        const selectedRelId = selectedNode.getAttributeNS('http://schemas.openxmlformats.org/officeDocument/2006/relationships', 'id');
 
-        // Copy cell values and styles explicitly. ExcelJS worksheet-model cloning
-        // alone does not reliably carry every cell style into another workbook.
-        sourceSheet.eachRow({includeEmpty:true}, (sourceRow, rowNumber) => {
-          const targetRow = targetSheet.getRow(rowNumber);
-          targetRow.height = sourceRow.height;
-          targetRow.hidden = sourceRow.hidden;
-          targetRow.outlineLevel = sourceRow.outlineLevel;
-          targetRow.collapsed = sourceRow.collapsed;
-          targetRow.style = JSON.parse(JSON.stringify(sourceRow.style || {}));
-
-          sourceRow.eachCell({includeEmpty:true}, (sourceCell, columnNumber) => {
-            const targetCell = targetRow.getCell(columnNumber);
-            targetCell.value = sourceCell.value;
-            targetCell.style = JSON.parse(JSON.stringify(sourceCell.style || {}));
-            if (sourceCell.note) targetCell.note = sourceCell.note;
-          });
+        sheetNodes.forEach(node => {
+          if (node !== selectedNode) node.parentNode.removeChild(node);
         });
 
-        // Preserve column widths, visibility and column-level styles.
-        (sourceSheet.columns || []).forEach((sourceColumn, index) => {
-          const targetColumn = targetSheet.getColumn(index + 1);
-          if (sourceColumn.width !== undefined) targetColumn.width = sourceColumn.width;
-          targetColumn.hidden = sourceColumn.hidden;
-          targetColumn.outlineLevel = sourceColumn.outlineLevel;
-          targetColumn.style = JSON.parse(JSON.stringify(sourceColumn.style || {}));
+        // Keep the original worksheet XML and every style/shared-string/theme part
+        // byte-for-byte. Only change the workbook index to expose one sheet.
+        const relationshipNodes = Array.from(relsDoc.getElementsByTagNameNS('*', 'Relationship'));
+        relationshipNodes.forEach(node => {
+          const type = node.getAttribute('Type') || '';
+          if (type.endsWith('/worksheet') && node.getAttribute('Id') !== selectedRelId) {
+            node.parentNode.removeChild(node);
+          }
         });
 
-        // Reapply merged ranges after the cell data/style copy.
-        (sourceSheet.model.merges || []).forEach(range => {
-          try { targetSheet.mergeCells(range); } catch (_) {}
-        });
+        // Defined names can refer to sheets that are no longer present.
+        const definedNames = workbookDoc.getElementsByTagNameNS('*', 'definedNames');
+        if (definedNames.length) definedNames[0].parentNode.removeChild(definedNames[0]);
 
-        // Merging cells can alter edge borders in ExcelJS. Reapply each source
-        // cell's border after all merged ranges have been recreated.
-        sourceSheet.eachRow({includeEmpty:true}, (sourceRow, rowNumber) => {
-          sourceRow.eachCell({includeEmpty:true}, (sourceCell, columnNumber) => {
-            if (!sourceCell.border) return;
-            const targetCell = targetSheet.getRow(rowNumber).getCell(columnNumber);
-            targetCell.border = JSON.parse(JSON.stringify(sourceCell.border));
-          });
-        });
-
-        // Keep worksheet-level options that are exposed by ExcelJS.
-        targetSheet.properties = JSON.parse(JSON.stringify(sourceSheet.properties || {}));
-        targetSheet.pageSetup = JSON.parse(JSON.stringify(sourceSheet.pageSetup || {}));
-        targetSheet.headerFooter = JSON.parse(JSON.stringify(sourceSheet.headerFooter || {}));
-        targetSheet.views = JSON.parse(JSON.stringify(sourceSheet.views || []));
-        if (sourceSheet.autoFilter) {
-          targetSheet.autoFilter = JSON.parse(JSON.stringify(sourceSheet.autoFilter));
-        }
-        if (sourceSheet.dataValidations) {
-          targetSheet.dataValidations = JSON.parse(JSON.stringify(sourceSheet.dataValidations));
-        }
-        if (Array.isArray(sourceSheet.conditionalFormattings) && sourceSheet.conditionalFormattings.length) {
-          targetSheet.conditionalFormattings = JSON.parse(JSON.stringify(sourceSheet.conditionalFormattings));
-        }
-
-        const bytes = await outputBook.xlsx.writeBuffer();
+        zip.file('xl/workbook.xml', new XMLSerializer().serializeToString(workbookDoc));
+        zip.file('xl/_rels/workbook.xml.rels', new XMLSerializer().serializeToString(relsDoc));
+        const bytes = await zip.generateAsync({type:'uint8array', compression:'DEFLATE', compressionOptions:{level:6}});
+        const oneSheetZip = new JSZip();
+        oneSheetZip.file(outputName + '.xlsx', bytes);
+        const oneSheetBlob = await oneSheetZip.generateAsync({type:'uint8array', compression:'DEFLATE', compressionOptions:{level:6}});
         zip.file(outputName + '.xlsx', bytes);
-        status.textContent = 'Przetworzono arkuszy: ' + (index + 1) +
-          ' z ' + workbook.worksheets.length;
+        status.textContent = 'Przygotowano arkuszy: ' + (index + 1) + ' z ' + workbook.sheets.length;
+        // Accumulate individual XLSX packages in the final archive.
+        if (index === 0) window.__sheetSplitArchive = new JSZip();
+        window.__sheetSplitArchive.file(outputName + '.xlsx', bytes);
       }
+      const zip = window.__sheetSplitArchive;
+      window.__sheetSplitArchive = null;
       const blob = await zip.generateAsync({
         type:'blob', compression:'DEFLATE', compressionOptions:{level:6}
       });
