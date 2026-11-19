@@ -286,7 +286,7 @@ li{padding:9px 11px;margin-top:6px;border:1px solid #e6eaf0;border-radius:7px;di
     if (contentTypesFile) {
       const contentTypesDoc = new DOMParser().parseFromString(await contentTypesFile.async('string'), 'application/xml');
       Array.from(contentTypesDoc.getElementsByTagNameNS('*', 'Override')).forEach(node => {
-        const partName = (node.getAttribute('PartName') || '').replace(/^\\//, '');
+        const partName = (node.getAttribute('PartName') || '').replace(/^\//, '');
         if (partName && !keep.has(partName)) node.parentNode.removeChild(node);
       });
       zip.file('[Content_Types].xml', new XMLSerializer().serializeToString(contentTypesDoc));
