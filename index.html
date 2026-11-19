@@ -109,7 +109,7 @@ footer{font-size:12px;color:#7a8494;text-align:center;margin:20px 0}
     });
 
     // Copy column dimensions and default column styles.
-    sourceSheet.columns.forEach((column, index) => {
+    (sourceSheet.columns || []).forEach((column, index) => {
       const targetColumn = targetSheet.getColumn(index + 1);
       if (column.width != null) targetColumn.width = column.width;
       if (column.hidden != null) targetColumn.hidden = column.hidden;
@@ -135,11 +135,11 @@ footer{font-size:12px;color:#7a8494;text-align:center;margin:20px 0}
 
     // Recreate merged cells after values have been copied.
     const merges = sourceSheet.model.merges || [];
-    merges.forEach(range => targetSheet.mergeCells(range));
+    (merges || []).forEach(range => targetSheet.mergeCells(range));
 
     if (sourceSheet.autoFilter) targetSheet.autoFilter = clonePlain(sourceSheet.autoFilter);
     if (sourceSheet.headerFooter) targetSheet.headerFooter = clonePlain(sourceSheet.headerFooter);
-    if (sourceSheet.conditionalFormattings?.length) {
+    if (Array.isArray(sourceSheet.conditionalFormattings) && sourceSheet.conditionalFormattings.length) {
       targetSheet.conditionalFormattings = clonePlain(sourceSheet.conditionalFormattings);
     }
 
