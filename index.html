@@ -99,19 +99,147 @@ footer{font-size:12px;color:#7a8494;text-align:center;margin:20px 0}
     return value == null ? value : JSON.parse(JSON.stringify(value));
   }
 
-  async function exportStyledSheet(sheetName) {
-    // Start from the original workbook instead of rebuilding a sheet.
-    // This keeps the source theme, which is needed for theme-based fill colors.
-    const outBook = new ExcelJS.Workbook();
-    await outBook.xlsx.load(sourceArrayBuffer.slice(0));
-    const keepSheet = outBook.getWorksheet(sheetName);
-    if (!keepSheet) throw new Error('Nie znaleziono arkusza: ' + sheetName);
-    for (const sheet of [...outBook.worksheets]) {
-      if (sheet.id !== keepSheet.id) outBook.removeWorksheet(sheet.id);
-    }
-    return await outBook.xlsx.writeBuffer();
+  function xmlChildren(parent, name) {
+    return Array.from(parent.children || []).filter(el => el.localName === name);
   }
-
+  function columnNumber(letters) {
+    let n=0;
+    for(const ch of letters.toUpperCase()) n=n*26+ch.charCodeAt(0)-64;
+    return n;
+  }
+  function columnLetters(n) {
+    let out='';
+    while(n>0){const r=(n-1)%26;out=String.fromCharCode(65+r)+out;n=Math.floor((n-1)/26);}
+    return out;
+  }
+  function cellPosition(ref) {
+    const m=String(ref||'').replace(/\$/g,'').match(/^([A-Z]+)(\d+)$/i);
+    return m ? {col:columnNumber(m[1]),row:Number(m[2])} : null;
+  }
+  function cropWorksheetXml(xmlText) {
+    const doc=new DOMParser().parseFromString(xmlText,'application/xml');
+    if(doc.getElementsByTagName('parsererror').length) throw new Error('Nie udało się odczytać struktury arkusza XLSX.');
+    const root=doc.documentElement;
+    const byName=(name)=>Array.from(root.getElementsByTagNameNS('*',name));
+    const dimension=byName('dimension')[0];
+    if(dimension) dimension.setAttribute('ref','E1:Z56');
+    const sheetData=byName('sheetData')[0];
+    if(sheetData){
+      for(const row of Array.from(sheetData.children)){
+        const rowNum=Number(row.getAttribute('r'));
+        if(!rowNum || rowNum<1 || rowNum>56){row.remove();continue;}
+        row.removeAttribute('spans');
+        for(const cell of Array.from(row.children)){
+          if(cell.localName!=='c') continue;
+          const pos=cellPosition(cell.getAttribute('r'));
+          if(!pos || pos.col<5 || pos.col>26 || pos.row<1 || pos.row>56) cell.remove();
+        }
+      }
+    }
+    const cols=byName('cols')[0];
+    if(cols){
+      for(const col of Array.from(cols.children)){
+        let min=Number(col.getAttribute('min')), max=Number(col.getAttribute('max'));
+        if(!min||!max||max<5||min>26){col.remove();continue;}
+        col.setAttribute('min',String(Math.max(5,min)));
+        col.setAttribute('max',String(Math.min(26,max)));
+      }
+      if(!cols.children.length) cols.remove();
+    }
+    const merges=byName('mergeCells')[0];
+    if(merges){
+      for(const item of Array.from(merges.children)){
+        const ref=item.getAttribute('ref')||'';
+        const parts=ref.split(':');
+        const a=cellPosition(parts[0]), b=cellPosition(parts[1]||parts[0]);
+        if(!a||!b||b.col<5||a.col>26||b.row<1||a.row>56){item.remove();continue;}
+        const c1=Math.max(5,a.col), c2=Math.min(26,b.col), r1=Math.max(1,a.row), r2=Math.min(56,b.row);
+        item.setAttribute('ref',columnLetters(c1)+r1+':'+columnLetters(c2)+r2);
+      }
+      merges.setAttribute('count',String(merges.children.length));
+      if(!merges.children.length) merges.remove();
+    }
+    for(const name of ['autoFilter','hyperlinks']){
+      for(const node of byName(name)){
+        if(name==='autoFilter'){
+          if(node.hasAttribute('ref')) node.setAttribute('ref','E1:Z56');
+        } else {
+          for(const link of Array.from(node.children)){
+            const pos=cellPosition(link.getAttribute('ref'));
+            if(!pos||pos.col<5||pos.col>26||pos.row<1||pos.row>56) link.remove();
+          }
+          if(!node.children.length) node.remove();
+        }
+      }
+    }
+    for(const name of ['conditionalFormatting','dataValidation']){
+      for(const node of byName(name)){
+        const attr=node.getAttribute('sqref');
+        if(!attr) continue;
+        const kept=[];
+        for(const token of attr.split(/\s+/)){
+          const bits=token.split(':');
+          const a=cellPosition(bits[0]), b=cellPosition(bits[1]||bits[0]);
+          if(!a||!b||b.col<5||a.col>26||b.row<1||a.row>56) continue;
+          kept.push(columnLetters(Math.max(5,a.col))+Math.max(1,a.row)+':'+columnLetters(Math.min(26,b.col))+Math.min(56,b.row));
+        }
+        if(kept.length) node.setAttribute('sqref',kept.join(' ')); else node.remove();
+      }
+    }
+    for(const node of byName('selection')){
+      if(node.hasAttribute('activeCell')) node.setAttribute('activeCell','E1');
+      if(node.hasAttribute('sqref')) node.setAttribute('sqref','E1');
+    }
+    for(const node of byName('pane')){
+      if(node.hasAttribute('topLeftCell')) node.setAttribute('topLeftCell','E1');
+    }
+    return new XMLSerializer().serializeToString(doc);
+  }
+  async function exportStyledSheet(sheetName) {
+    // Patch the original XLSX package directly. This avoids a full ExcelJS
+    // round-trip, which can rewrite unsupported Excel extensions and trigger repair warnings.
+    const zip=await JSZip.loadAsync(sourceArrayBuffer.slice(0));
+    const workbookPath='xl/workbook.xml';
+    const relsPath='xl/_rels/workbook.xml.rels';
+    const workbookFile=zip.file(workbookPath), relsFile=zip.file(relsPath);
+    if(!workbookFile||!relsFile) throw new Error('Nieprawidłowa struktura pliku XLSX.');
+    const parser=new DOMParser();
+    const workbookDoc=parser.parseFromString(await workbookFile.async('string'),'application/xml');
+    const relsDoc=parser.parseFromString(await relsFile.async('string'),'application/xml');
+    if(workbookDoc.getElementsByTagName('parsererror').length||relsDoc.getElementsByTagName('parsererror').length) throw new Error('Nie można odczytać struktury skoroszytu XLSX.');
+    const sheetsNode=Array.from(workbookDoc.getElementsByTagNameNS('*','sheets'))[0];
+    const relNodes=Array.from(relsDoc.getElementsByTagNameNS('*','Relationship'));
+    const sheetNodes=sheetsNode?Array.from(sheetsNode.children).filter(x=>x.localName==='sheet'):[];
+    const selected=sheetNodes.find(x=>x.getAttribute('name')===sheetName);
+    if(!selected) throw new Error('Nie znaleziono arkusza: '+sheetName);
+    const relationId=selected.getAttribute('r:id')||selected.getAttributeNS('http://schemas.openxmlformats.org/officeDocument/2006/relationships','id');
+    const selectedRel=relNodes.find(x=>x.getAttribute('Id')===relationId);
+    if(!selectedRel) throw new Error('Brak powiązania pliku arkusza: '+sheetName);
+    let target=selectedRel.getAttribute('Target')||'';
+    const sheetPath=target.startsWith('/')?target.slice(1):('xl/'+target.replace(/^\.\//,''));
+    const sheetFile=zip.file(sheetPath);
+    if(!sheetFile) throw new Error('Nie znaleziono danych arkusza: '+sheetPath);
+    for(const node of sheetNodes) if(node!==selected) node.remove();
+    for(const rel of relNodes){
+      if(rel.getAttribute('Id')!==relationId && /\/worksheet$/i.test(rel.getAttribute('Type')||'')) rel.remove();
+    }
+    const views=Array.from(workbookDoc.getElementsByTagNameNS('*','workbookView'));
+    for(const view of views){view.setAttribute('activeTab','0');view.setAttribute('firstSheet','0');}
+    const names=Array.from(workbookDoc.getElementsByTagNameNS('*','definedName'));
+    for(const name of names){
+      const local=name.getAttribute('localSheetId');
+      if(local!==null && Number(local)!==sheetNodes.indexOf(selected)) name.remove();
+      else if(local!==null) name.setAttribute('localSheetId','0');
+      if(name.parentNode && /_xlnm\.Print_Area/i.test(name.getAttribute('name')||'')) name.textContent="'"+sheetName.replace(/'/g,"''")+"'!$E$1:$Z$56";
+    }
+    const calc=Array.from(workbookDoc.getElementsByTagNameNS('*','calcPr'))[0];
+    if(calc){calc.setAttribute('fullCalcOnLoad','1');calc.setAttribute('forceFullCalc','1');}
+    const sheetXml=await sheetFile.async('string');
+    zip.file(sheetPath,cropWorksheetXml(sheetXml));
+    zip.file(workbookPath,new XMLSerializer().serializeToString(workbookDoc));
+    zip.file(relsPath,new XMLSerializer().serializeToString(relsDoc));
+    return await zip.generateAsync({type:'arraybuffer',compression:'DEFLATE',compressionOptions:{level:6}});
+  }
 
   function cssColor(color, fallback='transparent') {
     if (!color) return fallback;
