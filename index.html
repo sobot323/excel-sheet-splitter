@@ -159,6 +159,140 @@ li{padding:9px 11px;margin-top:6px;border:1px solid #e6eaf0;border-radius:7px;di
     if (file) loadFile(file);
   });
 
+
+  const PACKAGE_REL_NS = 'http://schemas.openxmlformats.org/package/2006/relationships';
+  const MAIN_NS = 'http://schemas.openxmlformats.org/spreadsheetml/2006/main';
+  const APP_NS = 'http://schemas.openxmlformats.org/officeDocument/2006/extended-properties';
+  const VT_NS = 'http://schemas.openxmlformats.org/officeDocument/2006/docPropsVTypes';
+
+  function normalizePackagePath(value) {
+    const parts = [];
+    String(value).split('/').forEach(part => {
+      if (!part || part === '.') return;
+      if (part === '..') parts.pop();
+      else parts.push(part);
+    });
+    return parts.join('/');
+  }
+
+  function relationshipsPath(partPath) {
+    const slash = partPath.lastIndexOf('/');
+    const directory = slash >= 0 ? partPath.slice(0, slash + 1) : '';
+    const filename = slash >= 0 ? partPath.slice(slash + 1) : partPath;
+    return directory + '_rels/' + filename + '.rels';
+  }
+
+  function relationshipTargets(xml, sourcePartPath) {
+    const doc = new DOMParser().parseFromString(xml, 'application/xml');
+    if (doc.getElementsByTagName('parsererror').length) {
+      throw new Error('Nieprawidłowy plik relacji XLSX: ' + sourcePartPath);
+    }
+    return Array.from(doc.getElementsByTagNameNS(PACKAGE_REL_NS, 'Relationship'))
+      .filter(node => node.getAttribute('TargetMode') !== 'External')
+      .map(node => {
+        const target = node.getAttribute('Target') || '';
+        if (!target) return null;
+        const base = sourcePartPath ? sourcePartPath.slice(0, sourcePartPath.lastIndexOf('/') + 1) : '';
+        return normalizePackagePath(target.startsWith('/') ? target.slice(1) : base + target);
+      }).filter(Boolean);
+  }
+
+  async function updateAppProperties(zip, sheetName, workbookDoc) {
+    const file = zip.file('docProps/app.xml');
+    if (!file) return;
+    const doc = new DOMParser().parseFromString(await file.async('string'), 'application/xml');
+    if (doc.getElementsByTagName('parsererror').length) return;
+
+    const definedNames = Array.from(workbookDoc.getElementsByTagNameNS(MAIN_NS, 'definedName'));
+    const titles = [sheetName, ...definedNames.map(node => {
+      const name = node.getAttribute('name') || '';
+      return node.hasAttribute('localSheetId') ? "'" + sheetName.replace(/'/g, "''") + "'!" + name : name;
+    })];
+
+    const headingVector = doc.getElementsByTagNameNS(APP_NS, 'HeadingPairs')[0]
+      ?.getElementsByTagNameNS(VT_NS, 'vector')[0];
+    if (headingVector) {
+      const variants = Array.from(headingVector.getElementsByTagNameNS(VT_NS, 'variant'));
+      variants.forEach((variant, index) => {
+        const label = variant.getElementsByTagNameNS(VT_NS, 'lpstr')[0]?.textContent || '';
+        const count = variant.getElementsByTagNameNS(VT_NS, 'i4')[0];
+        if (!count) return;
+        if (label === 'Arkusze' || label === 'Worksheets') count.textContent = '1';
+        if (label === 'Nazwane zakresy' || label === 'Named Ranges') count.textContent = String(definedNames.length);
+      });
+    }
+
+    const titlesVector = doc.getElementsByTagNameNS(APP_NS, 'TitlesOfParts')[0]
+      ?.getElementsByTagNameNS(VT_NS, 'vector')[0];
+    if (titlesVector) {
+      while (titlesVector.firstChild) titlesVector.removeChild(titlesVector.firstChild);
+      titles.forEach(value => {
+        const item = doc.createElementNS(VT_NS, 'vt:lpstr');
+        item.textContent = value;
+        titlesVector.appendChild(item);
+      });
+      titlesVector.setAttribute('size', String(titles.length));
+    }
+    zip.file('docProps/app.xml', new XMLSerializer().serializeToString(doc));
+  }
+
+  async function cleanWorkbookPackage(zip, sheetName, workbookDoc) {
+    const relsFile = zip.file('xl/_rels/workbook.xml.rels');
+    if (relsFile) {
+      const relsDoc = new DOMParser().parseFromString(await relsFile.async('string'), 'application/xml');
+      Array.from(relsDoc.getElementsByTagNameNS(PACKAGE_REL_NS, 'Relationship')).forEach(node => {
+        if ((node.getAttribute('Type') || '').endsWith('/calcChain')) node.parentNode.removeChild(node);
+      });
+      zip.file('xl/_rels/workbook.xml.rels', new XMLSerializer().serializeToString(relsDoc));
+    }
+
+    // The calculation chain still refers to cells on worksheets that are removed.
+    // Removing it asks Excel to rebuild the chain when the one-sheet workbook opens.
+    const calcPr = workbookDoc.getElementsByTagNameNS(MAIN_NS, 'calcPr')[0];
+    if (calcPr) {
+      calcPr.setAttribute('fullCalcOnLoad', '1');
+      calcPr.setAttribute('forceFullCalc', '1');
+    }
+
+    await updateAppProperties(zip, sheetName, workbookDoc);
+
+    // Keep only package parts reachable from the package root relationships.
+    // This removes hidden worksheets, their relationship files, stale drawings,
+    // unused printer settings and any other orphaned parts.
+    const rootRels = zip.file('_rels/.rels');
+    if (!rootRels) throw new Error('Brakuje głównego pliku relacji XLSX.');
+    const queue = relationshipTargets(await rootRels.async('string'), '');
+    const keep = new Set(['_rels/.rels', '[Content_Types].xml']);
+    while (queue.length) {
+      const partPath = queue.shift();
+      if (keep.has(partPath)) continue;
+      const part = zip.file(partPath);
+      if (!part) continue;
+      keep.add(partPath);
+      const relPath = relationshipsPath(partPath);
+      const relFile = zip.file(relPath);
+      if (relFile) {
+        keep.add(relPath);
+        queue.push(...relationshipTargets(await relFile.async('string'), partPath));
+      }
+    }
+
+    Object.keys(zip.files).forEach(path => {
+      const entry = zip.files[path];
+      if (!entry.dir && !keep.has(path)) zip.remove(path);
+    });
+
+    const contentTypesFile = zip.file('[Content_Types].xml');
+    if (contentTypesFile) {
+      const contentTypesDoc = new DOMParser().parseFromString(await contentTypesFile.async('string'), 'application/xml');
+      Array.from(contentTypesDoc.getElementsByTagNameNS('*', 'Override')).forEach(node => {
+        const partName = (node.getAttribute('PartName') || '').replace(/^\\//, '');
+        if (partName && !keep.has(partName)) node.parentNode.removeChild(node);
+      });
+      zip.file('[Content_Types].xml', new XMLSerializer().serializeToString(contentTypesDoc));
+    }
+  }
+
   runButton.addEventListener('click', async () => {
     if (!workbook) return;
     runButton.disabled = true;
@@ -222,6 +356,8 @@ li{padding:9px 11px;margin-top:6px;border:1px solid #e6eaf0;border-radius:7px;di
 
         zip.file('xl/workbook.xml', new XMLSerializer().serializeToString(workbookDoc));
         zip.file('xl/_rels/workbook.xml.rels', new XMLSerializer().serializeToString(relsDoc));
+        await cleanWorkbookPackage(zip, sheet.name, workbookDoc);
+        zip.file('xl/workbook.xml', new XMLSerializer().serializeToString(workbookDoc));
         const bytes = await zip.generateAsync({type:'uint8array', compression:'DEFLATE', compressionOptions:{level:6}});
         status.textContent = 'Przygotowano arkuszy: ' + (index + 1) + ' z ' + workbook.sheets.length;
         // Accumulate individual XLSX packages in the final archive.
