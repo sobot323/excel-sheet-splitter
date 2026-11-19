@@ -195,6 +195,130 @@ footer{font-size:12px;color:#7a8494;text-align:center;margin:20px 0}
     }
     return new XMLSerializer().serializeToString(doc);
   }
+
+  function freezeConditionalFills(sheetXmlText, stylesXmlText) {
+    const parser = new DOMParser();
+    const sheetDoc = parser.parseFromString(sheetXmlText, 'application/xml');
+    const stylesDoc = parser.parseFromString(stylesXmlText, 'application/xml');
+    if (sheetDoc.getElementsByTagName('parsererror').length || stylesDoc.getElementsByTagName('parsererror').length) {
+      throw new Error('Nie udało się odczytać reguł formatowania warunkowego.');
+    }
+    const sheetRoot = sheetDoc.documentElement;
+    const styleRoot = stylesDoc.documentElement;
+    const byName = (root, name) => Array.from(root.getElementsByTagNameNS('*', name));
+    const sheetData = byName(sheetRoot, 'sheetData')[0];
+    const sharedFile = null;
+    const sharedStrings = [];
+    // Shared strings are loaded by the caller and attached below when available.
+    const cells = new Map();
+    if (sheetData) {
+      for (const row of Array.from(sheetData.children)) {
+        for (const cell of Array.from(row.children)) {
+          if (cell.localName === 'c' && cell.getAttribute('r')) cells.set(cell.getAttribute('r'), cell);
+        }
+      }
+    }
+    const fills = byName(styleRoot, 'fills')[0];
+    const cellXfs = byName(styleRoot, 'cellXfs')[0];
+    const dxfs = byName(styleRoot, 'dxfs')[0];
+    if (!fills || !cellXfs || !dxfs) return { sheetXml: sheetXmlText, stylesXml: stylesXmlText };
+    const dxfNodes = Array.from(dxfs.children).filter(x => x.localName === 'dxf');
+    const xfNodes = Array.from(cellXfs.children).filter(x => x.localName === 'xf');
+    const fillCache = new Map();
+    const styleCache = new Map();
+    const fillKey = node => node ? new XMLSerializer().serializeToString(node) : '';
+    const getCellText = (ref, shared) => {
+      const cell = cells.get(ref);
+      if (!cell) return '';
+      const type = cell.getAttribute('t') || '';
+      if (type === 'inlineStr') {
+        const inline = byName(cell, 't');
+        return inline.map(x => x.textContent || '').join('');
+      }
+      const valueNode = Array.from(cell.children).find(x => x.localName === 'v');
+      const raw = valueNode ? valueNode.textContent : '';
+      if (type === 's') return shared[Number(raw)] ?? '';
+      if (type === 'b') return raw === '1' ? 'TRUE' : 'FALSE';
+      return raw == null ? '' : String(raw);
+    };
+    const addFill = dxfFill => {
+      const key = fillKey(dxfFill);
+      if (fillCache.has(key)) return fillCache.get(key);
+      const clone = dxfFill.cloneNode(true);
+      fills.appendChild(clone);
+      const id = Array.from(fills.children).filter(x => x.localName === 'fill').length - 1;
+      fills.setAttribute('count', String(Array.from(fills.children).length));
+      fillCache.set(key, id);
+      return id;
+    };
+    const styleWithFill = (baseStyle, fillId) => {
+      const key = baseStyle + ':' + fillId;
+      if (styleCache.has(key)) return styleCache.get(key);
+      const base = xfNodes[baseStyle] || xfNodes[0];
+      if (!base) return baseStyle;
+      const clone = base.cloneNode(true);
+      clone.setAttribute('fillId', String(fillId));
+      clone.setAttribute('applyFill', '1');
+      cellXfs.appendChild(clone);
+      const id = Array.from(cellXfs.children).filter(x => x.localName === 'xf').length - 1;
+      cellXfs.setAttribute('count', String(Array.from(cellXfs.children).length));
+      styleCache.set(key, id);
+      return id;
+    };
+    const ranges = [];
+    const cfNodes = byName(sheetRoot, 'conditionalFormatting');
+    for (const cf of cfNodes) {
+      const tokens = (cf.getAttribute('sqref') || '').trim().split(/\s+/).filter(Boolean);
+      const parsedRanges = [];
+      for (const token of tokens) {
+        const parts = token.split(':');
+        const a = cellPosition(parts[0]), b = cellPosition(parts[1] || parts[0]);
+        if (a && b) parsedRanges.push({ a, b });
+      }
+      const baseRow = parsedRanges.length ? parsedRanges[0].a.row : 1;
+      const rules = Array.from(cf.children).filter(x => x.localName === 'cfRule')
+        .sort((a,b) => Number(a.getAttribute('priority') || 999999) - Number(b.getAttribute('priority') || 999999));
+      for (const rule of rules) {
+        const formulaNode = Array.from(rule.children).find(x => x.localName === 'formula');
+        const formula = formulaNode ? formulaNode.textContent.trim().replace(/^=/,'') : '';
+        const match = formula.match(/^\s*\$?([A-Z]{1,3})\$?(\d+)\s*=\s*"((?:[^"]|"")*)"\s*$/i);
+        if (!match || (rule.getAttribute('type') || '') !== 'expression') continue;
+        const refCol = match[1].toUpperCase();
+        const formulaRow = Number(match[2]);
+        const expected = match[3].replace(/""/g, '"');
+        const dxfId = Number(rule.getAttribute('dxfId'));
+        const dxf = Number.isInteger(dxfId) ? dxfNodes[dxfId] : null;
+        const dxfFill = dxf ? Array.from(dxf.children).find(x => x.localName === 'fill') : null;
+        if (!dxfFill) continue;
+        const fillId = addFill(dxfFill);
+        for (const range of parsedRanges) {
+          const r1 = Math.max(1, range.a.row), r2 = Math.min(56, range.b.row);
+          const c1 = Math.max(5, range.a.col), c2 = Math.min(26, range.b.col);
+          if (r1 > r2 || c1 > c2) continue;
+          for (let row = r1; row <= r2; row++) {
+            const sourceRow = formulaRow + (row - baseRow);
+            const conditionValue = getCellText(refCol + sourceRow, sharedStrings);
+            if (conditionValue !== expected) continue;
+            for (let col = c1; col <= c2; col++) {
+              const cell = cells.get(columnLetters(col) + row);
+              if (!cell || cell.getAttribute('data-frozen-cf-fill')) continue;
+              const baseStyle = Number(cell.getAttribute('s') || 0);
+              const newStyle = styleWithFill(baseStyle, fillId);
+              if (newStyle !== undefined) cell.setAttribute('s', String(newStyle));
+              cell.setAttribute('data-frozen-cf-fill', '1');
+            }
+          }
+        }
+      }
+    }
+    // Marker is only used while processing; it is not part of the XLSX schema.
+    for (const cell of cells.values()) cell.removeAttribute('data-frozen-cf-fill');
+    return {
+      sheetXml: new XMLSerializer().serializeToString(sheetDoc),
+      stylesXml: new XMLSerializer().serializeToString(stylesDoc)
+    };
+  }
+
   async function exportStyledSheet(sheetName) {
     // Patch the original XLSX package directly. This avoids a full ExcelJS
     // round-trip, which can rewrite unsupported Excel extensions and trigger repair warnings.
@@ -234,7 +358,13 @@ footer{font-size:12px;color:#7a8494;text-align:center;margin:20px 0}
     }
     const calc=Array.from(workbookDoc.getElementsByTagNameNS('*','calcPr'))[0];
     if(calc){calc.setAttribute('fullCalcOnLoad','1');calc.setAttribute('forceFullCalc','1');}
-    const sheetXml=await sheetFile.async('string');
+    let sheetXml=await sheetFile.async('string');
+    const stylesFile=zip.file('xl/styles.xml');
+    if(stylesFile) {
+      const frozen=freezeConditionalFills(sheetXml, await stylesFile.async('string'));
+      sheetXml=frozen.sheetXml;
+      zip.file('xl/styles.xml', frozen.stylesXml);
+    }
     zip.file(sheetPath,cropWorksheetXml(sheetXml));
     zip.file(workbookPath,new XMLSerializer().serializeToString(workbookDoc));
     zip.file(relsPath,new XMLSerializer().serializeToString(relsDoc));
