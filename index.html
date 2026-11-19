@@ -29,15 +29,15 @@ footer{font-size:12px;color:#7a8494;text-align:center;margin:20px 0}
 <div class="field"><label for="suffix">Tekst dodawany do nazw plików</label><input id="suffix" type="text"></div>
 <div id="preview" class="status" aria-live="polite">Nie wybrano pliku.</div>
 <button id="run" disabled>Podziel i pobierz ZIP</button>
-<div class="note">Plik jest przetwarzany lokalnie w Twojej przeglądarce. Dla plików XLSX zachowujemy skoroszyt źródłowy i usuwamy z niego pozostałe arkusze, aby lepiej zachować motyw oraz formatowanie. PDF przenosi podstawowe style komórek: kolory, czcionki, wyrównanie i obramowania. Wykresy, obrazy, makra i niektóre zaawansowane elementy mogą nie zostać przeniesione. Pliki XLS/XLSM/XLSB są eksportowane dotychczasową metodą, która może nie zachować formatowania. PDF zawiera dane arkusza w formie tabeli.</div>
+<div class="note">Plik jest przetwarzany lokalnie w Twojej przeglądarce. Dla plików XLSX zachowujemy skoroszyt źródłowy i usuwamy z niego pozostałe arkusze, aby lepiej zachować motyw oraz formatowanie. PDF jest renderowany z układu arkusza, z uwzględnieniem wymiarów wierszy i kolumn, scalania oraz formatowania komórek. Wykresy, obrazy, makra i niektóre zaawansowane elementy mogą nie zostać przeniesione. Pliki XLS/XLSM/XLSB są eksportowane dotychczasową metodą, która może nie zachować formatowania. PDF zawiera dane arkusza w formie tabeli.</div>
 </main>
 <footer>Excel Sheet Splitter</footer>
 </div>
 <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/exceljs@4.4.0/dist/exceljs.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/pdfmake@0.2.20/build/pdfmake.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/pdfmake@0.2.20/build/vfs_fonts.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/html2canvas@1.4.1/dist/html2canvas.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/jspdf@2.5.1/dist/jspdf.umd.min.js"></script>
 <script>
 (() => {
   const fileInput = document.getElementById('file');
@@ -112,101 +112,125 @@ footer{font-size:12px;color:#7a8494;text-align:center;margin:20px 0}
     return await outBook.xlsx.writeBuffer();
   }
 
-  const indexedColors = [
-    '000000','FFFFFF','FF0000','00FF00','0000FF','FFFF00','FF00FF','00FFFF',
-    '000000','FFFFFF','FF0000','00FF00','0000FF','FFFF00','FF00FF','00FFFF',
-    '800000','008000','000080','808000','800080','008080','C0C0C0','808080',
-    '9999FF','993366','FFFFCC','CCFFFF','660066','FF8080','0066CC','CCCCFF',
-    '000080','FF00FF','FFFF00','00FFFF','800080','800000','008080','0000FF',
-    '00CCFF','CCFFFF','CCFFCC','FFFF99','99CCFF','FF99CC','CC99FF','FFCC99',
-    '3366FF','33CCCC','99CC00','FFCC00','FF9900','FF6600','666699','969696',
-    '003366','339966','003300','333300','993300','993366','333399','333333'
-  ];
-  const themeColors = ['FFFFFF','000000','E7E6E6','44546A','4472C4','ED7D31','A5A5A5','FFC000','5B9BD5','70AD47'];
 
-  function tintHex(hex, tint) {
-    if (tint == null || tint === 0) return hex;
-    const amount = Math.max(-1, Math.min(1, Number(tint)));
-    const rgb = hex.match(/[0-9a-f]{2}/gi).map(v => parseInt(v,16));
-    const adjusted = rgb.map(v => Math.round(amount < 0 ? v * (1 + amount) : v * (1 - amount) + 255 * amount));
-    return adjusted.map(v => v.toString(16).padStart(2,'0')).join('').toUpperCase();
-  }
-  function pdfColor(color, fallback) {
+  function cssColor(color, fallback='transparent') {
     if (!color) return fallback;
-    let hex = null;
-    if (color.argb) hex = String(color.argb).slice(-6);
-    else if (color.rgb) hex = String(color.rgb).replace(/^#/,'').slice(-6);
-    else if (Number.isInteger(color.indexed)) hex = indexedColors[color.indexed] || null;
-    else if (Number.isInteger(color.theme)) hex = themeColors[color.theme] || null;
+    let hex = color.argb ? String(color.argb).slice(-6) : color.rgb ? String(color.rgb).replace(/^#/,'').slice(-6) : null;
+    if (!hex && Number.isInteger(color.theme)) hex = ['FFFFFF','000000','E7E6E6','44546A','4472C4','ED7D31','A5A5A5','FFC000','5B9BD5','70AD47'][color.theme];
     if (!hex || !/^[0-9a-f]{6}$/i.test(hex)) return fallback;
-    return '#' + tintHex(hex, color.tint).toLowerCase();
+    return '#'+hex;
   }
-  function pdfCellStyle(cell) {
-    const result = {fontSize: 7, margin: [3,3,3,3], alignment: 'left'};
-    const font = cell && cell.font ? cell.font : {};
-    if (font.bold) result.bold = true;
-    if (font.italic) result.italics = true;
-    if (font.underline) result.decoration = 'underline';
-    if (font.strike) result.decoration = result.decoration ? [result.decoration,'lineThrough'] : 'lineThrough';
-    if (font.size) result.fontSize = Math.max(5, Math.min(28, Number(font.size)));
-    const fontColor = pdfColor(font.color, null);
-    if (fontColor) result.color = fontColor;
-
-    const fill = cell && cell.fill;
-    if (fill && fill.type === 'pattern' && fill.pattern === 'solid') {
-      const fillColor = pdfColor(fill.fgColor || fill.bgColor, null);
-      if (fillColor) result.fillColor = fillColor;
-    }
-    const alignment = cell && cell.alignment ? cell.alignment : {};
-    if (['left','center','right','justify'].includes(alignment.horizontal)) result.alignment = alignment.horizontal;
-    if (['top','middle','bottom'].includes(alignment.vertical)) result.valign = alignment.vertical;
-    if (alignment.wrapText === false) result.noWrap = true;
-
-    const border = cell && cell.border;
-    if (border) {
-      const sides = ['left','top','right','bottom'];
-      const widths = sides.map(side => {
-        const line = border[side];
-        if (!line || !line.style) return 0;
-        return ({hair:0.3, thin:0.5, dotted:0.5, dashed:0.6, dashDot:0.6, medium:1, mediumDashed:1, double:1.2, thick:1.5}[line.style] || 0.5);
-      });
-      const colors = sides.map(side => pdfColor(border[side] && border[side].color, '#9AA3B2'));
-      if (widths.some(v => v > 0)) {
-        result.border = widths.map(v => v > 0);
-        result.borderWidth = widths;
-        result.borderColor = colors;
+  function cellCss(cell) {
+    const st=cell.style||{}, font=st.font||{}, align=st.alignment||{}, fill=st.fill||{}, border=st.border||{};
+    const css=[];
+    if(font.name) css.push('font-family:'+JSON.stringify(font.name));
+    if(font.size) css.push('font-size:'+Math.max(6,Math.min(36,font.size))+'pt');
+    if(font.bold) css.push('font-weight:700');
+    if(font.italic) css.push('font-style:italic');
+    if(font.underline) css.push('text-decoration:underline');
+    if(font.color) css.push('color:'+cssColor(font.color,'#000000'));
+    if(fill.type==='pattern' && fill.pattern==='solid') css.push('background-color:'+cssColor(fill.fgColor||fill.bgColor));
+    if(align.horizontal) css.push('text-align:'+({center:'center',right:'right',justify:'justify',fill:'left'}[align.horizontal]||'left'));
+    if(align.vertical) css.push('vertical-align:'+({middle:'middle',bottom:'bottom',top:'top'}[align.vertical]||'middle'));
+    css.push('white-space:'+(align.wrapText?'pre-wrap':'pre'));
+    css.push('overflow-wrap:anywhere');
+    for(const side of ['top','right','bottom','left']){
+      const b=border[side]; if(b&&b.style){
+        const widths={hair:'1px',thin:'1px',dotted:'1px',dashed:'1px',medium:'2px',thick:'3px',double:'3px'};
+        css.push('border-'+side+':'+(widths[b.style]||'1px')+' '+(b.style==='dotted'?'dotted':b.style==='dashed'?'dashed':b.style==='double'?'double':'solid')+' '+cssColor(b.color,'#777777'));
       }
     }
-    return result;
+    return css.join(';');
   }
-  function pdfBlob(sheet, sheetName, styleWorkbook) {
-    const sourceStyleSheet = styleWorkbook ? styleWorkbook.getWorksheet(sheetName) : null;
-    const rows = XLSX.utils.sheet_to_json(sheet,{header:1,raw:false,defval:'',blankrows:true});
-    const nonEmpty = rows.map((row,index)=>({row,index})).filter(item =>
-      item.row.some(cell => String(cell ?? '').trim() !== '')
-    );
-    const columnCount = Math.max(1,...nonEmpty.map(item=>item.row.length));
-    const body = nonEmpty.length ? nonEmpty.map(({row,index}) => {
-      const cells = Array.from({length:columnCount},(_,i)=>String(row[i] ?? ''));
-      return cells.map((value,colIndex) => {
-        const excelCell = sourceStyleSheet ? sourceStyleSheet.getRow(index+1).getCell(colIndex+1) : null;
-        return {text:value, ...pdfCellStyle(excelCell)};
-      });
-    }) : [[{text:'Arkusz nie zawiera danych.',colSpan:1}]];
-    const definition = {
-      pageSize:'A4',
-      pageOrientation:columnCount>6?'landscape':'portrait',
-      pageMargins:[24,42,24,32],
-      defaultStyle:{font:'Roboto',fontSize:8},
-      content:[
-        {text:sheetName,style:'title',margin:[0,0,0,12]},
-        {table:{headerRows:0,widths:Array(columnCount).fill('*'),body},layout:'noBorders'}
-      ],
-      styles:{title:{fontSize:14,bold:true,color:'#172033'}}
-    };
-    return new Promise((resolve,reject)=>{
-      try{pdfMake.createPdf(definition).getBlob(resolve);}catch(error){reject(error);}
-    });
+  function excelDisplayValue(cell) {
+    if(cell.value==null) return '';
+    if(cell.text!=null && cell.text!=='') return String(cell.text);
+    if(cell.value instanceof Date) return cell.value.toLocaleDateString('pl-PL');
+    if(typeof cell.value==='object'){
+      if(cell.value.richText) return cell.value.richText.map(x=>x.text||'').join('');
+      if(cell.value.text) return cell.value.text;
+      if(cell.value.result!=null) return String(cell.value.result);
+      if(cell.value.hyperlink) return cell.value.text||cell.value.hyperlink;
+    }
+    return String(cell.value);
+  }
+  function renderSheetHtml(sheet, sheetName) {
+    const box=document.createElement('div');
+    box.style.cssText='position:fixed;left:-20000px;top:0;background:white;color:#000;padding:0;margin:0;z-index:-1;';
+    const table=document.createElement('table');
+    table.style.cssText='border-collapse:collapse;table-layout:fixed;background:white;color:#000;font-family:Arial,sans-serif;font-size:10pt;';
+    const colgroup=document.createElement('colgroup');
+    const visibleCols=[];
+    for(let c=1;c<=Math.max(sheet.columnCount,1);c++){
+      const col=sheet.getColumn(c); if(col.hidden) continue;
+      visibleCols.push(c);
+      const el=document.createElement('col');
+      const px=col.width ? Math.max(24,col.width*7.2) : 64;
+      el.style.width=px+'px'; colgroup.appendChild(el);
+    }
+    table.appendChild(colgroup);
+    const mergeMap=new Map(), covered=new Set();
+    const merges=sheet.model&&sheet.model.merges||[];
+    for(const ref of merges){
+      const r=XLSX.utils.decode_range(ref);
+      mergeMap.set(r.s.r+','+r.s.c,{rowspan:r.e.r-r.s.r+1,colspan:r.e.c-r.s.c+1});
+      for(let rr=r.s.r;rr<=r.e.r;rr++) for(let cc=r.s.c;cc<=r.e.c;cc++) if(rr!==r.s.r||cc!==r.s.c) covered.add(rr+','+cc);
+    }
+    const maxRow=Math.max(sheet.rowCount,1);
+    for(let r=1;r<=maxRow;r++){
+      const row=sheet.getRow(r); if(row.hidden) continue;
+      const tr=document.createElement('tr');
+      if(row.height) tr.style.height=(row.height*96/72)+'px';
+      for(const c of visibleCols){
+        const key=(r-1)+','+(c-1); if(covered.has(key)) continue;
+        const cell=row.getCell(c), td=document.createElement('td'), merge=mergeMap.get(key);
+        td.style.cssText='padding:3px 5px;min-height:18px;'+cellCss(cell);
+        if(merge){td.rowSpan=merge.rowspan;td.colSpan=merge.colspan;}
+        const value=excelDisplayValue(cell);
+        td.textContent=value;
+        if(!cell.border || !Object.keys(cell.border).length) td.style.border='1px solid #d7dce3';
+        tr.appendChild(td);
+      }
+      table.appendChild(tr);
+    }
+    box.appendChild(table); document.body.appendChild(box);
+    return box;
+  }
+  async function pdfBlob(sheet, sheetName, styleWorkbook) {
+    if(!styleWorkbook) {
+      throw new Error('Dokładniejsze odwzorowanie PDF wymaga pliku XLSX. Pliki XLS/XLSM/XLSB nie udostępniają pełnych stylów w użytym mechanizmie.');
+    }
+    const sourceSheet=styleWorkbook.getWorksheet(sheetName);
+    if(!sourceSheet) throw new Error('Nie znaleziono arkusza do eksportu PDF: '+sheetName);
+    const box=renderSheetHtml(sourceSheet,sheetName);
+    try {
+      await new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)));
+      const canvas=await html2canvas(box,{backgroundColor:'#ffffff',scale:1.5,useCORS:true,logging:false});
+      const setup=sourceSheet.pageSetup||{};
+      const landscape=setup.orientation==='landscape' || (!setup.orientation && canvas.width>canvas.height);
+      const format=setup.paperSize===9?'a4':setup.paperSize===1?'letter':'a4';
+      const {jsPDF}=window.jspdf;
+      const doc=new jsPDF({orientation:landscape?'landscape':'portrait',unit:'mm',format});
+      const pageW=doc.internal.pageSize.getWidth(), pageH=doc.internal.pageSize.getHeight();
+      const margins=setup.margins||{};
+      const left=(margins.left??0.25)*25.4, right=(margins.right??0.25)*25.4;
+      const top=(margins.top??0.5)*25.4, bottom=(margins.bottom??0.5)*25.4;
+      const usableW=Math.max(20,pageW-left-right), usableH=Math.max(30,pageH-top-bottom);
+      const scale=usableW/canvas.width;
+      const sliceHeight=Math.max(1,Math.floor(usableH/scale));
+      let y=0, page=0;
+      while(y<canvas.height){
+        const h=Math.min(sliceHeight,canvas.height-y);
+        const part=document.createElement('canvas'); part.width=canvas.width; part.height=h;
+        part.getContext('2d').drawImage(canvas,0,y,canvas.width,h,0,0,canvas.width,h);
+        if(page>0) doc.addPage(format,landscape?'landscape':'portrait');
+        doc.addImage(part.toDataURL('image/jpeg',0.94),'JPEG',left,top,usableW,h*scale,undefined,'FAST');
+        y+=h; page++;
+      }
+      return doc.output('blob');
+    } finally {
+      box.remove();
+    }
   }
   runButton.addEventListener('click',async()=>{
     if(!selectedFile||!workbook)return;
