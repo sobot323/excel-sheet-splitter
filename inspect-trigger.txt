@@ -1,1 +1,1 @@
-Run detailed XLSX diagnostics.
+Inspect worksheet XML lengths.
