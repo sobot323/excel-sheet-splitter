@@ -202,10 +202,6 @@ li{padding:9px 11px;margin-top:6px;border:1px solid #e6eaf0;border-radius:7px;di
         zip.file('xl/workbook.xml', new XMLSerializer().serializeToString(workbookDoc));
         zip.file('xl/_rels/workbook.xml.rels', new XMLSerializer().serializeToString(relsDoc));
         const bytes = await zip.generateAsync({type:'uint8array', compression:'DEFLATE', compressionOptions:{level:6}});
-        const oneSheetZip = new JSZip();
-        oneSheetZip.file(outputName + '.xlsx', bytes);
-        const oneSheetBlob = await oneSheetZip.generateAsync({type:'uint8array', compression:'DEFLATE', compressionOptions:{level:6}});
-        zip.file(outputName + '.xlsx', bytes);
         status.textContent = 'Przygotowano arkuszy: ' + (index + 1) + ' z ' + workbook.sheets.length;
         // Accumulate individual XLSX packages in the final archive.
         if (index === 0) window.__sheetSplitArchive = new JSZip();
@@ -224,7 +220,7 @@ li{padding:9px 11px;margin-top:6px;border:1px solid #e6eaf0;border-radius:7px;di
       link.click();
       link.remove();
       setTimeout(() => URL.revokeObjectURL(url), 30000);
-      status.textContent = 'Gotowe. Utworzono ' + workbook.worksheets.length +
+      status.textContent = 'Gotowe. Utworzono ' + workbook.sheets.length +
         ' osobnych plików XLSX w paczce ZIP.';
     } catch (error) {
       status.textContent = 'Błąd podczas tworzenia paczki: ' + error.message;
