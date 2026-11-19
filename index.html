@@ -200,6 +200,16 @@ li{padding:9px 11px;margin-top:6px;border:1px solid #e6eaf0;border-radius:7px;di
           try { targetSheet.mergeCells(range); } catch (_) {}
         });
 
+        // Merging cells can alter edge borders in ExcelJS. Reapply each source
+        // cell's border after all merged ranges have been recreated.
+        sourceSheet.eachRow({includeEmpty:true}, (sourceRow, rowNumber) => {
+          sourceRow.eachCell({includeEmpty:true}, (sourceCell, columnNumber) => {
+            if (!sourceCell.border) return;
+            const targetCell = targetSheet.getRow(rowNumber).getCell(columnNumber);
+            targetCell.border = JSON.parse(JSON.stringify(sourceCell.border));
+          });
+        });
+
         // Keep worksheet-level options that are exposed by ExcelJS.
         targetSheet.properties = JSON.parse(JSON.stringify(sourceSheet.properties || {}));
         targetSheet.pageSetup = JSON.parse(JSON.stringify(sourceSheet.pageSetup || {}));
