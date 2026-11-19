@@ -196,7 +196,7 @@ footer{font-size:12px;color:#7a8494;text-align:center;margin:20px 0}
     return new XMLSerializer().serializeToString(doc);
   }
 
-  function freezeConditionalFills(sheetXmlText, stylesXmlText) {
+  function freezeConditionalFills(sheetXmlText, stylesXmlText, sharedStrings) {
     const parser = new DOMParser();
     const sheetDoc = parser.parseFromString(sheetXmlText, 'application/xml');
     const stylesDoc = parser.parseFromString(stylesXmlText, 'application/xml');
@@ -207,9 +207,7 @@ footer{font-size:12px;color:#7a8494;text-align:center;margin:20px 0}
     const styleRoot = stylesDoc.documentElement;
     const byName = (root, name) => Array.from(root.getElementsByTagNameNS('*', name));
     const sheetData = byName(sheetRoot, 'sheetData')[0];
-    const sharedFile = null;
-    const sharedStrings = [];
-    // Shared strings are loaded by the caller and attached below when available.
+    sharedStrings = sharedStrings || [];
     const cells = new Map();
     if (sheetData) {
       for (const row of Array.from(sheetData.children)) {
@@ -361,7 +359,15 @@ footer{font-size:12px;color:#7a8494;text-align:center;margin:20px 0}
     let sheetXml=await sheetFile.async('string');
     const stylesFile=zip.file('xl/styles.xml');
     if(stylesFile) {
-      const frozen=freezeConditionalFills(sheetXml, await stylesFile.async('string'));
+      let sharedStrings=[];
+      const sharedFile=zip.file('xl/sharedStrings.xml');
+      if(sharedFile) {
+        const sharedDoc=parser.parseFromString(await sharedFile.async('string'),'application/xml');
+        sharedStrings=Array.from(sharedDoc.getElementsByTagNameNS('*','si')).map(si =>
+          Array.from(si.getElementsByTagNameNS('*','t')).map(t=>t.textContent||'').join('')
+        );
+      }
+      const frozen=freezeConditionalFills(sheetXml, await stylesFile.async('string'), sharedStrings);
       sheetXml=frozen.sheetXml;
       zip.file('xl/styles.xml', frozen.stylesXml);
     }
