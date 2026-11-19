@@ -179,7 +179,8 @@ footer{font-size:12px;color:#7a8494;text-align:center;margin:20px 0}
     }
     return result;
   }
-  function pdfBlob(sheet, sheetName, styledSheet) {
+  function pdfBlob(sheet, sheetName, styleWorkbook) {
+    const sourceStyleSheet = styleWorkbook ? styleWorkbook.getWorksheet(sheetName) : null;
     const rows = XLSX.utils.sheet_to_json(sheet,{header:1,raw:false,defval:'',blankrows:true});
     const nonEmpty = rows.map((row,index)=>({row,index})).filter(item =>
       item.row.some(cell => String(cell ?? '').trim() !== '')
@@ -188,7 +189,7 @@ footer{font-size:12px;color:#7a8494;text-align:center;margin:20px 0}
     const body = nonEmpty.length ? nonEmpty.map(({row,index}) => {
       const cells = Array.from({length:columnCount},(_,i)=>String(row[i] ?? ''));
       return cells.map((value,colIndex) => {
-        const excelCell = styledSheet ? styledSheet.getRow(index+1).getCell(colIndex+1) : null;
+        const excelCell = sourceStyleSheet ? sourceStyleSheet.getRow(index+1).getCell(colIndex+1) : null;
         return {text:value, ...pdfCellStyle(excelCell)};
       });
     }) : [[{text:'Arkusz nie zawiera danych.',colSpan:1}]];
@@ -218,9 +219,7 @@ footer{font-size:12px;color:#7a8494;text-align:center;margin:20px 0}
         const sheetName=workbook.SheetNames[i];
         const outputName=uniqueName(safeName(safeName(sheetName)+suffixInput.value),used);
         let xlsxData;
-        let styledSheet = null;
         if (styledWorkbook) {
-          styledSheet=styledWorkbook.getWorksheet(sheetName);
           xlsxData=await exportStyledSheet(sheetName);
         } else {
           const outBook=XLSX.utils.book_new();
@@ -228,7 +227,7 @@ footer{font-size:12px;color:#7a8494;text-align:center;margin:20px 0}
           xlsxData=XLSX.write(outBook,{bookType:'xlsx',type:'array',cellStyles:true,compression:true});
         }
         zip.file(outputName+'.xlsx',xlsxData);
-        const pdf=await pdfBlob(workbook.Sheets[sheetName],sheetName,styledSheet);
+        const pdf=await pdfBlob(workbook.Sheets[sheetName],sheetName,styledWorkbook);
         zip.file(outputName+'.pdf',pdf);
         preview.textContent='Przetworzono arkuszy: '+(i+1)+' z '+workbook.SheetNames.length;
       }
