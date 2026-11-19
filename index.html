@@ -36,8 +36,8 @@ li{padding:9px 11px;margin-top:6px;border:1px solid #e6eaf0;border-radius:7px;di
 <section class="panel">
 <div class="drop" id="drop">
   <label class="file-label" for="file">Wybierz plik Excel</label>
-  <input id="file" type="file" accept=".xlsx,.xls,.xlsm,.xlsb">
-  <div class="hint" id="file-name">Możesz też przeciągnąć plik tutaj.</div>
+  <input id="file" type="file" accept=".xlsx">
+  <div class="hint" id="file-name">Możesz też przeciągnąć plik tutaj. Obsługiwany format: XLSX.</div>
 </div>
 <div class="field">
 <label class="field-label" for="suffix">Tekst dodawany na końcu nazwy każdego pliku</label>
@@ -48,7 +48,7 @@ li{padding:9px 11px;margin-top:6px;border:1px solid #e6eaf0;border-radius:7px;di
 <button id="run" disabled>Utwórz paczkę ZIP</button>
 </section>
 </main>
-<script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/exceljs@4.4.0/dist/exceljs.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>
 <script>
 (() => {
@@ -85,12 +85,12 @@ li{padding:9px 11px;margin-top:6px;border:1px solid #e6eaf0;border-radius:7px;di
   function renderPreview() {
     if (!workbook) return;
     const used = new Set();
-    const rows = workbook.SheetNames.map(sheet => {
-      const name = uniqueName(cleanName(sheet + suffixInput.value), used);
-      return '<li><span>' + escapeHtml(sheet) + '</span><span class="filename">' +
+    const rows = workbook.worksheets.map(sheet => {
+      const name = uniqueName(cleanName(sheet.name + suffixInput.value), used);
+      return '<li><span>' + escapeHtml(sheet.name) + '</span><span class="filename">' +
         escapeHtml(name + '.xlsx') + '</span></li>';
     }).join('');
-    status.innerHTML = '<strong>Liczba arkuszy: ' + workbook.SheetNames.length +
+    status.innerHTML = '<strong>Liczba arkuszy: ' + workbook.worksheets.length +
       '</strong><ul>' + rows + '</ul>';
   }
 
@@ -102,8 +102,8 @@ li{padding:9px 11px;margin-top:6px;border:1px solid #e6eaf0;border-radius:7px;di
 
   async function loadFile(file) {
     if (!file) return;
-    if (!/\.(xlsx|xls|xlsm|xlsb)$/i.test(file.name)) {
-      status.textContent = 'Wybierz plik Excel w formacie XLSX, XLS, XLSM lub XLSB.';
+    if (!/\.xlsx$/i.test(file.name)) {
+      status.textContent = 'Wybierz plik Excel w formacie XLSX.';
       return;
     }
     runButton.disabled = true;
@@ -112,8 +112,9 @@ li{padding:9px 11px;margin-top:6px;border:1px solid #e6eaf0;border-radius:7px;di
     fileName.textContent = file.name;
     try {
       const data = await file.arrayBuffer();
-      const parsed = XLSX.read(data, {type:'array', cellStyles:true, cellDates:true});
-      if (!parsed.SheetNames || parsed.SheetNames.length === 0) {
+      const parsed = new ExcelJS.Workbook();
+      await parsed.xlsx.load(data);
+      if (!parsed.worksheets || parsed.worksheets.length === 0) {
         throw new Error('Plik nie zawiera żadnych arkuszy.');
       }
       workbook = parsed;
@@ -156,15 +157,69 @@ li{padding:9px 11px;margin-top:6px;border:1px solid #e6eaf0;border-radius:7px;di
     try {
       const zip = new JSZip();
       const used = new Set();
-      workbook.SheetNames.forEach(sheetName => {
-        const outputName = uniqueName(cleanName(sheetName + suffixInput.value), used);
-        const outputBook = XLSX.utils.book_new();
-        XLSX.utils.book_append_sheet(outputBook, workbook.Sheets[sheetName], sheetName);
-        const bytes = XLSX.write(outputBook, {
-          bookType:'xlsx', type:'array', cellStyles:true, compression:true
+      for (let index = 0; index < workbook.worksheets.length; index++) {
+        const sourceSheet = workbook.worksheets[index];
+        const outputName = uniqueName(cleanName(sourceSheet.name + suffixInput.value), used);
+        const outputBook = new ExcelJS.Workbook();
+
+        // Copy the complete worksheet model first: dimensions, merges, views,
+        // page setup, conditional formatting and other worksheet-level settings.
+        const targetSheet = outputBook.addWorksheet(sourceSheet.name);
+        targetSheet.model = JSON.parse(JSON.stringify(sourceSheet.model));
+        targetSheet.name = sourceSheet.name;
+
+        // Copy cell values and styles explicitly. ExcelJS worksheet-model cloning
+        // alone does not reliably carry every cell style into another workbook.
+        sourceSheet.eachRow({includeEmpty:true}, (sourceRow, rowNumber) => {
+          const targetRow = targetSheet.getRow(rowNumber);
+          targetRow.height = sourceRow.height;
+          targetRow.hidden = sourceRow.hidden;
+          targetRow.outlineLevel = sourceRow.outlineLevel;
+          targetRow.collapsed = sourceRow.collapsed;
+          targetRow.style = JSON.parse(JSON.stringify(sourceRow.style || {}));
+
+          sourceRow.eachCell({includeEmpty:true}, (sourceCell, columnNumber) => {
+            const targetCell = targetRow.getCell(columnNumber);
+            targetCell.value = sourceCell.value;
+            targetCell.style = JSON.parse(JSON.stringify(sourceCell.style || {}));
+            if (sourceCell.note) targetCell.note = sourceCell.note;
+          });
         });
+
+        // Preserve column widths, visibility and column-level styles.
+        sourceSheet.columns.forEach((sourceColumn, index) => {
+          const targetColumn = targetSheet.getColumn(index + 1);
+          if (sourceColumn.width !== undefined) targetColumn.width = sourceColumn.width;
+          targetColumn.hidden = sourceColumn.hidden;
+          targetColumn.outlineLevel = sourceColumn.outlineLevel;
+          targetColumn.style = JSON.parse(JSON.stringify(sourceColumn.style || {}));
+        });
+
+        // Reapply merged ranges after the cell data/style copy.
+        (sourceSheet.model.merges || []).forEach(range => {
+          try { targetSheet.mergeCells(range); } catch (_) {}
+        });
+
+        // Keep worksheet-level options that are exposed by ExcelJS.
+        targetSheet.properties = JSON.parse(JSON.stringify(sourceSheet.properties || {}));
+        targetSheet.pageSetup = JSON.parse(JSON.stringify(sourceSheet.pageSetup || {}));
+        targetSheet.headerFooter = JSON.parse(JSON.stringify(sourceSheet.headerFooter || {}));
+        targetSheet.views = JSON.parse(JSON.stringify(sourceSheet.views || []));
+        if (sourceSheet.autoFilter) {
+          targetSheet.autoFilter = JSON.parse(JSON.stringify(sourceSheet.autoFilter));
+        }
+        if (sourceSheet.dataValidations) {
+          targetSheet.dataValidations = JSON.parse(JSON.stringify(sourceSheet.dataValidations));
+        }
+        if (sourceSheet.conditionalFormattings) {
+          targetSheet.conditionalFormattings = JSON.parse(JSON.stringify(sourceSheet.conditionalFormattings));
+        }
+
+        const bytes = await outputBook.xlsx.writeBuffer();
         zip.file(outputName + '.xlsx', bytes);
-      });
+        status.textContent = 'Przetworzono arkuszy: ' + (index + 1) +
+          ' z ' + workbook.worksheets.length;
+      }
       const blob = await zip.generateAsync({
         type:'blob', compression:'DEFLATE', compressionOptions:{level:6}
       });
@@ -176,7 +231,7 @@ li{padding:9px 11px;margin-top:6px;border:1px solid #e6eaf0;border-radius:7px;di
       link.click();
       link.remove();
       setTimeout(() => URL.revokeObjectURL(url), 30000);
-      status.textContent = 'Gotowe. Utworzono ' + workbook.SheetNames.length +
+      status.textContent = 'Gotowe. Utworzono ' + workbook.worksheets.length +
         ' osobnych plików XLSX w paczce ZIP.';
     } catch (error) {
       status.textContent = 'Błąd podczas tworzenia paczki: ' + error.message;
