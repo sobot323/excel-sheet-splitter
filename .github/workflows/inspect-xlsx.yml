@@ -46,6 +46,15 @@ jobs:
               ct=ET.fromstring(data["[Content_Types].xml"])
               missing_ct=[e.attrib.get("PartName") for e in ct if e.attrib.get("PartName") and e.attrib["PartName"].lstrip("/") not in names]
               print("MISSING CONTENT-TYPE PARTS:",missing_ct)
+              xml_errors=[]
+              for n in sorted(x for x in names if x.endswith(".xml") or x.endswith(".rels")):
+                  try: ET.fromstring(data[n])
+                  except Exception as e: xml_errors.append((n,repr(e)))
+              print("XML PARSE ERRORS:",xml_errors)
+              if "xl/calcChain.xml" in data:
+                  print("CALCCHAIN:",data["xl/calcChain.xml"].decode("utf-8","replace")[:5000])
+              if "docProps/app.xml" in data:
+                  print("APP XML:",data["docProps/app.xml"].decode("utf-8","replace")[:5000])
               for n in sorted(x for x in names if x.startswith("xl/worksheets/sheet") and x.endswith(".xml") and not "/_rels/" in x):
                   print("WORKSHEET SIZE",n,len(data[n]),"START",repr(data[n][:120]))
               for n in ("_rels/.rels","xl/workbook.xml","xl/_rels/workbook.xml.rels","xl/worksheets/sheet22.xml","xl/worksheets/_rels/sheet22.xml.rels"):
