@@ -35,7 +35,7 @@ jobs:
           if (start < 0 || end < 0) throw new Error('Nie znaleziono funkcji czyszczenia XLSX.');
           const context = { DOMParser, XMLSerializer, console };
           vm.createContext(context);
-          vm.runInContext(html.slice(start, end) + '\\nglobalThis.runClean = cleanWorkbookPackage;', context);
+          vm.runInContext(html.slice(start, end) + String.fromCharCode(10) + 'globalThis.runClean = cleanWorkbookPackage;', context);
           (async () => {
             const zip = await JSZip.loadAsync(fs.readFileSync('test-files/wygenerowany.xlsx'));
             const workbookDoc = new DOMParser().parseFromString(await zip.file('xl/workbook.xml').async('string'), 'application/xml');
