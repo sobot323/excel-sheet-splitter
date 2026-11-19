@@ -218,8 +218,9 @@ footer{font-size:12px;color:#7a8494;text-align:center;margin:20px 0}
         const sheetName=workbook.SheetNames[i];
         const outputName=uniqueName(safeName(safeName(sheetName)+suffixInput.value),used);
         let xlsxData;
+        let styledSheet = null;
         if (styledWorkbook) {
-          const styledSheet=styledWorkbook.getWorksheet(sheetName);
+          styledSheet=styledWorkbook.getWorksheet(sheetName);
           xlsxData=await exportStyledSheet(sheetName);
         } else {
           const outBook=XLSX.utils.book_new();
