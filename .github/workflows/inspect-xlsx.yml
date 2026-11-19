@@ -11,6 +11,71 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Check application JavaScript syntax
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          html=Path("index.html").read_text(encoding="utf-8")
+          start=html.index("<script>")+len("<script>")
+          end=html.index("</script>",start)
+          Path("/tmp/app.js").write_text(html[start:end],encoding="utf-8")
+          PY
+          node --check /tmp/app.js
+      - name: Test XLSX cleanup against uploaded generated file
+        run: |
+          npm install --no-save jszip @xmldom/xmldom
+          cat > /tmp/test-cleanup.cjs <<'NODE'
+          const fs = require('fs');
+          const vm = require('vm');
+          const JSZip = require('jszip');
+          const { DOMParser, XMLSerializer } = require('@xmldom/xmldom');
+          const html = fs.readFileSync('index.html', 'utf8');
+          const start = html.indexOf('  const PACKAGE_REL_NS');
+          const end = html.indexOf('  runButton.addEventListener', start);
+          if (start < 0 || end < 0) throw new Error('Nie znaleziono funkcji czyszczenia XLSX.');
+          const context = { DOMParser, XMLSerializer, console };
+          vm.createContext(context);
+          vm.runInContext(html.slice(start, end) + '\\nglobalThis.runClean = cleanWorkbookPackage;', context);
+          (async () => {
+            const zip = await JSZip.loadAsync(fs.readFileSync('test-files/wygenerowany.xlsx'));
+            const workbookDoc = new DOMParser().parseFromString(await zip.file('xl/workbook.xml').async('string'), 'application/xml');
+            const sheet = workbookDoc.getElementsByTagNameNS('http://schemas.openxmlformats.org/spreadsheetml/2006/main', 'sheet')[0];
+            await context.runClean(zip, sheet.getAttribute('name'), workbookDoc);
+            zip.file('xl/workbook.xml', new XMLSerializer().serializeToString(workbookDoc));
+            fs.writeFileSync('/tmp/cleaned.xlsx', await zip.generateAsync({type:'nodebuffer'}));
+          })().catch(error => { console.error(error); process.exit(1); });
+          NODE
+          node /tmp/test-cleanup.cjs
+          python - <<'PY'
+          import zipfile, xml.etree.ElementTree as ET, posixpath
+          p='/tmp/cleaned.xlsx'
+          with zipfile.ZipFile(p) as z:
+              names=set(z.namelist())
+              assert z.testzip() is None, 'ZIP CRC error'
+              sheets=[n for n in names if n.startswith('xl/worksheets/sheet') and n.endswith('.xml') and '/_rels/' not in n]
+              assert len(sheets)==1, f'Expected 1 worksheet part, found {len(sheets)}: {sheets}'
+              assert 'xl/calcChain.xml' not in names, 'Stale calcChain remains'
+              for n in names:
+                  if n.endswith('.xml') or n.endswith('.rels'):
+                      ET.fromstring(z.read(n))
+              for relfile in [n for n in names if n.endswith('.rels')]:
+                  parent, leaf=posixpath.split(relfile)
+                  source_dir=posixpath.dirname(parent)
+                  source=posixpath.join(source_dir,leaf[:-5])
+                  base=posixpath.dirname(source)
+                  root=ET.fromstring(z.read(relfile))
+                  for rel in root:
+                      target=rel.attrib.get('Target','')
+                      if rel.attrib.get('TargetMode')=='External' or not target: continue
+                      resolved=posixpath.normpath(posixpath.join(base,target))
+                      assert resolved in names, f'Missing relationship target: {relfile} -> {resolved}'
+              root=ET.fromstring(z.read('[Content_Types].xml'))
+              for item in root:
+                  part=item.attrib.get('PartName','').lstrip('/')
+                  assert not part or part in names, f'Missing content type part: {part}'
+              print('PASS: one worksheet, no calcChain, valid XML, all relationships and content types resolve.')
+              print('Remaining package parts:',len(names))
+          PY
       - name: Compare XLSX package structure
         run: |
           python - <<'PY'
