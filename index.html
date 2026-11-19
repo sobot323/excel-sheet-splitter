@@ -21,7 +21,9 @@ input[type=file]{position:absolute;width:1px;height:1px;opacity:0;pointer-events
 label.field-label{display:block;font-weight:600;margin-bottom:8px}
 input[type=text]{width:100%;padding:12px;border:1px solid #cbd3df;border-radius:8px;font:inherit}
 button{margin-top:22px;padding:12px 18px;border:0;border-radius:8px;background:#2458c6;color:white;font:inherit;font-weight:600;cursor:pointer}
-button:disabled{opacity:.45;cursor:not-allowed}\n#pdf-run{background:#16734a;margin-left:10px}\n@media(max-width:520px){#pdf-run{margin-left:0}}
+button:disabled{opacity:.45;cursor:not-allowed}
+#pdf-run{background:#16734a;margin-left:10px}
+@media(max-width:520px){#pdf-run{margin-left:0}}
 #status{margin-top:20px;font-size:14px;line-height:1.5}
 ul{padding:0;margin:12px 0 0;list-style:none}
 li{padding:9px 11px;margin-top:6px;border:1px solid #e6eaf0;border-radius:7px;display:flex;justify-content:space-between;gap:12px;font-size:13px}
@@ -45,7 +47,8 @@ li{padding:9px 11px;margin-top:6px;border:1px solid #e6eaf0;border-radius:7px;di
 <div class="hint">Przykład: Arkusz1_karta_pracy_11_2026.xlsx</div>
 </div>
 <div id="status" aria-live="polite">Nie wybrano pliku.</div>
-<button id="run" disabled>Utwórz paczkę XLSX</button>\n<button id="pdf-run" disabled>Wygeneruj i pobierz PDF</button>
+<button id="run" disabled>Utwórz paczkę XLSX</button>
+<button id="pdf-run" disabled>Wygeneruj i pobierz PDF</button>
 </section>
 </main>
 <script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>
