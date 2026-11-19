@@ -52,7 +52,13 @@ footer{font-size:12px;color:#7a8494;text-align:center;margin:20px 0}
   fileInput.addEventListener('change', () => loadFile(fileInput.files[0]));
   ['dragenter','dragover'].forEach(name => drop.addEventListener(name, e => {e.preventDefault();drop.classList.add('over');}));
   ['dragleave','drop'].forEach(name => drop.addEventListener(name, e => {e.preventDefault();drop.classList.remove('over');}));
-  drop.addEventListener('drop', e => {const f=e.dataTransfer.files[0];if(f)loadFile(f);});
+  // Prevent the browser from opening/downloading a dropped file when it lands outside the drop zone.
+  document.addEventListener('dragover', e => { e.preventDefault(); });
+  document.addEventListener('drop', e => {
+    e.preventDefault();
+    const f = e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0];
+    if (f) loadFile(f);
+  });
 
   function safeName(value) {
     return String(value).replace(/[\\/:*?"<>|\u0000-\u001f]/g,'_').replace(/[. ]+$/g,'').trim() || 'Arkusz';
