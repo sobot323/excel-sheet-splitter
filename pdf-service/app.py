@@ -138,9 +138,17 @@ def export_sheets_to_pdf(source_path, output_dir, names, suffix):
 
                 filename = unique_name(safe_name(selected_name + suffix), used) + ".pdf"
                 pdf_path = Path(output_dir) / filename
+                # Export only the selected sheet range. Hiding other sheets alone
+                # is not sufficient because Calc's PDF export can still include them.
+                selected_sheet = sheets.getByName(selected_name)
+                filter_data = (prop("Selection", selected_sheet),)
                 document.storeToURL(
                     pdf_path.resolve().as_uri(),
-                    (prop("FilterName", "calc_pdf_Export"), prop("Overwrite", True)),
+                    (
+                        prop("FilterName", "calc_pdf_Export"),
+                        prop("FilterData", filter_data),
+                        prop("Overwrite", True),
+                    ),
                 )
                 if not pdf_path.exists() or pdf_path.stat().st_size < 500:
                     raise RuntimeError(f"Nie udało się utworzyć PDF dla arkusza: {selected_name}")
