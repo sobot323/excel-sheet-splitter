@@ -48,17 +48,6 @@ def unique_name(name, used):
     return candidate
 
 
-def get_sheet_names(xlsx_path):
-    # Read sheet names from the workbook package without modifying the source file.
-    with zipfile.ZipFile(xlsx_path) as archive:
-        root = ET.fromstring(archive.read("xl/workbook.xml"))
-    ns = {"m": "http://schemas.openxmlformats.org/spreadsheetml/2006/main"}
-    names = [node.attrib["name"] for node in root.findall(".//m:sheets/m:sheet", ns)]
-    if not names:
-        raise ValueError("Skoroszyt nie zawiera arkuszy.")
-    return names
-
-
 def free_port():
     with socket.socket() as sock:
         sock.bind(("127.0.0.1", 0))
@@ -102,71 +91,85 @@ def connect_to_libreoffice(profile_dir):
         raise
 
 
-def export_sheets_to_pdf(source_path, output_dir, names, suffix):
+def export_workbook_to_pdf(source_path, pdf_path, desktop):
+    source_url = Path(source_path).resolve().as_uri()
+    document = desktop.loadComponentFromURL(
+        source_url,
+        "_blank",
+        0,
+        (
+            prop("Hidden", True),
+            prop("ReadOnly", True),
+            prop("UpdateDocMode", 3),
+            prop("MacroExecutionMode", 0),
+        ),
+    )
+    if document is None:
+        raise RuntimeError(f"LibreOffice nie otworzył pliku: {Path(source_path).name}")
+    try:
+        document.storeToURL(
+            Path(pdf_path).resolve().as_uri(),
+            (prop("FilterName", "calc_pdf_Export"), prop("Overwrite", True)),
+        )
+    finally:
+        try:
+            document.close(True)
+        except Exception:
+            pass
+    if not Path(pdf_path).exists() or Path(pdf_path).stat().st_size < 100:
+        raise RuntimeError(f"Nie udało się utworzyć PDF: {Path(pdf_path).name}")
+
+
+def convert_zip_to_pdfs(zip_path, output_dir):
+    max_files = 250
+    max_uncompressed = 500 * 1024 * 1024
+    with zipfile.ZipFile(zip_path) as archive:
+        entries = [
+            info for info in archive.infolist()
+            if not info.is_dir() and info.filename.lower().endswith(".xlsx")
+        ]
+        if not entries:
+            raise ValueError("Paczka ZIP nie zawiera plików XLSX.")
+        if len(entries) > max_files:
+            raise ValueError(f"Paczka zawiera zbyt wiele plików XLSX (limit: {max_files}).")
+        total_size = sum(info.file_size for info in entries)
+        if total_size > max_uncompressed:
+            raise ValueError("Rozpakowana zawartość paczki przekracza limit 500 MB.")
+
+        used_names = set()
+        jobs = []
+        input_dir = Path(output_dir) / "input"
+        input_dir.mkdir(parents=True, exist_ok=True)
+        for index, info in enumerate(entries, start=1):
+            # Keep archive paths as PDF names, but never use them as filesystem paths.
+            original_name = info.filename.replace("\\", "/")
+            parts = [part for part in original_name.split("/") if part not in ("", ".")]
+            if not parts or any(part == ".." for part in parts) or original_name.startswith("/"):
+                raise ValueError("Paczka ZIP zawiera nieprawidłową ścieżkę pliku.")
+            relative_pdf = str(Path(*parts).with_suffix(".pdf")).replace("\\", "/")
+            if relative_pdf.casefold() in used_names:
+                raise ValueError(f"W paczce są powtarzające się nazwy plików: {relative_pdf}")
+            used_names.add(relative_pdf.casefold())
+
+            input_path = input_dir / f"{index}_{safe_name(Path(parts[-1]).name)}"
+            with archive.open(info) as source, open(input_path, "wb") as target:
+                shutil.copyfileobj(source, target)
+            pdf_path = Path(output_dir) / f"{index}.pdf"
+            jobs.append((input_path, pdf_path, relative_pdf))
+
     with tempfile.TemporaryDirectory(prefix="lo-profile-") as profile_dir:
         process, desktop = connect_to_libreoffice(profile_dir)
-        document = None
         try:
-            source_url = Path(source_path).resolve().as_uri()
-            document = desktop.loadComponentFromURL(
-                source_url,
-                "_blank",
-                0,
-                (
-                    prop("Hidden", True),
-                    prop("ReadOnly", True),
-                    prop("UpdateDocMode", 3),
-                    prop("MacroExecutionMode", 0),
-                ),
-            )
-            if document is None:
-                raise RuntimeError("LibreOffice nie otworzył skoroszytu.")
-
-            sheets = document.getSheets()
-            actual_names = list(sheets.getElementNames())
-            if actual_names != names:
-                # Use the workbook's actual sheet order and names as read by LibreOffice.
-                names = actual_names
-            used = set()
-            output_files = []
-
-            for selected_name in names:
-                # Keep exactly one visible sheet so the PDF export contains only that tab.
-                for sheet_name in names:
-                    sheets.getByName(sheet_name).IsVisible = (sheet_name == selected_name)
-                document.getCurrentController().setActiveSheet(sheets.getByName(selected_name))
-
-                filename = unique_name(safe_name(selected_name + suffix), used) + ".pdf"
-                pdf_path = Path(output_dir) / filename
-                # Export only the selected sheet range. Hiding other sheets alone
-                # is not sufficient because Calc's PDF export can still include them.
-                selected_sheet = sheets.getByName(selected_name)
-                filter_data = (prop("Selection", selected_sheet),)
-                document.storeToURL(
-                    pdf_path.resolve().as_uri(),
-                    (
-                        prop("FilterName", "calc_pdf_Export"),
-                        prop("FilterData", filter_data),
-                        prop("Overwrite", True),
-                    ),
-                )
-                if not pdf_path.exists() or pdf_path.stat().st_size < 500:
-                    raise RuntimeError(f"Nie udało się utworzyć PDF dla arkusza: {selected_name}")
-                output_files.append(pdf_path)
-
-            return output_files
+            for source_path, pdf_path, _archive_name in jobs:
+                export_workbook_to_pdf(source_path, pdf_path, desktop)
         finally:
-            if document is not None:
-                try:
-                    document.close(True)
-                except Exception:
-                    pass
             try:
                 process.terminate()
                 process.wait(timeout=8)
             except Exception:
                 process.kill()
 
+    return jobs
 
 @app.get("/health")
 def health():
@@ -177,27 +180,22 @@ def health():
 def create_pdf_archive():
     upload = request.files.get("file")
     if upload is None or not upload.filename:
-        return jsonify({"error": "Nie przesłano pliku XLSX."}), 400
-    if not upload.filename.lower().endswith(".xlsx"):
-        return jsonify({"error": "Obsługiwany jest wyłącznie format XLSX."}), 400
-
-    suffix = request.form.get("suffix", "")
-    if len(suffix) > 100:
-        return jsonify({"error": "Tekst dodawany do nazw plików jest za długi."}), 400
+        return jsonify({"error": "Nie przesłano paczki ZIP."}), 400
+    if not upload.filename.lower().endswith(".zip"):
+        return jsonify({"error": "Prześlij paczkę ZIP zawierającą pliki XLSX."}), 400
 
     with tempfile.TemporaryDirectory(prefix="xlsx-pdf-") as work_dir:
-        source_path = Path(work_dir) / "source.xlsx"
-        output_dir = Path(work_dir) / "pdf"
+        source_path = Path(work_dir) / "source.zip"
+        output_dir = Path(work_dir) / "output"
         output_dir.mkdir()
         upload.save(source_path)
 
         try:
-            names = get_sheet_names(source_path)
-            pdf_files = export_sheets_to_pdf(source_path, output_dir, names, suffix)
+            jobs = convert_zip_to_pdfs(source_path, output_dir)
             archive_path = Path(work_dir) / "pdfy.zip"
-            with zipfile.ZipFile(archive_path, "w", zipfile.ZIP_DEFLATED) as archive:
-                for pdf_path in pdf_files:
-                    archive.write(pdf_path, arcname=pdf_path.name)
+            with zipfile.ZipFile(archive_path, "w", zipfile.ZIP_DEFLATED) as result:
+                for _source, pdf_path, archive_name in jobs:
+                    result.write(pdf_path, arcname=archive_name)
 
             return send_file(
                 archive_path,
@@ -205,10 +203,11 @@ def create_pdf_archive():
                 as_attachment=True,
                 download_name=f"{safe_name(Path(upload.filename).stem)}_PDF.zip",
             )
+        except zipfile.BadZipFile:
+            return jsonify({"error": "Przesłany plik nie jest prawidłową paczką ZIP."}), 400
         except Exception as error:
-            app.logger.exception("PDF export failed")
+            app.logger.exception("PDF batch conversion failed")
             return jsonify({"error": f"Nie udało się wygenerować PDF: {error}"}), 500
-
 
 @app.errorhandler(413)
 def too_large(_error):
