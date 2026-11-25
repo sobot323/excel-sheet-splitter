@@ -48,6 +48,16 @@ li{padding:9px 11px;margin-top:6px;border:1px solid #e6eaf0;border-radius:7px;di
 </div>
 <div id="status" aria-live="polite">Nie wybrano pliku.</div>
 <button id="run" disabled>Utwórz paczkę XLSX</button>
+</section>
+<section class="panel">
+<h2 style="font-size:20px;margin:0 0 10px">Konwersja paczki XLSX do PDF</h2>
+<p>Wgraj paczkę ZIP utworzoną w poprzednim kroku. Każdy plik XLSX zostanie przekonwertowany na osobny PDF. Nazwy plików pozostaną takie same.</p>
+<div class="drop" id="pdf-drop">
+  <label class="file-label" for="pdf-zip-file">Wybierz paczkę ZIP</label>
+  <input id="pdf-zip-file" type="file" accept=".zip,application/zip">
+  <div class="hint" id="pdf-file-name">Możesz też przeciągnąć tutaj paczkę ZIP z plikami XLSX.</div>
+</div>
+<div id="pdf-status" aria-live="polite">Nie wybrano paczki ZIP.</div>
 <button id="pdf-run" disabled>Wygeneruj i pobierz PDF</button>
 </section>
 </main>
@@ -61,11 +71,15 @@ li{padding:9px 11px;margin-top:6px;border:1px solid #e6eaf0;border-radius:7px;di
   const status = document.getElementById('status');
   const runButton = document.getElementById('run');
   const pdfButton = document.getElementById('pdf-run');
+  const pdfZipInput = document.getElementById('pdf-zip-file');
+  const pdfDrop = document.getElementById('pdf-drop');
+  const pdfFileName = document.getElementById('pdf-file-name');
+  const pdfStatus = document.getElementById('pdf-status');
+  let pdfZipFile = null;
   const PDF_API_URL = 'https://excel-sheet-splitter-pdf.onrender.com/api/pdf';
   let workbook = null;
   let sourceName = '';
   let sourceArrayBuffer = null;
-  let sourceFile = null;
 
   const date = new Date();
   suffixInput.value = '_karta_pracy_' +
@@ -114,8 +128,6 @@ li{padding:9px 11px;margin-top:6px;border:1px solid #e6eaf0;border-radius:7px;di
     }
     runButton.disabled = true;
     workbook = null;
-    sourceFile = null;
-    pdfButton.disabled = true;
     status.textContent = 'Wczytywanie pliku…';
     fileName.textContent = file.name;
     try {
@@ -135,10 +147,8 @@ li{padding:9px 11px;margin-top:6px;border:1px solid #e6eaf0;border-radius:7px;di
         }))
       };
       sourceArrayBuffer = data;
-      sourceFile = file;
       sourceName = file.name.replace(/\.[^.]+$/, '');
       runButton.disabled = false;
-      pdfButton.disabled = false;
       renderPreview();
     } catch (error) {
       status.textContent = 'Nie udało się odczytać pliku: ' + error.message;
@@ -303,15 +313,50 @@ li{padding:9px 11px;margin-top:6px;border:1px solid #e6eaf0;border-radius:7px;di
     }
   }
 
+  function selectPdfZip(file) {
+    if (!file) return;
+    if (!/\.zip$/i.test(file.name)) {
+      pdfZipFile = null;
+      pdfButton.disabled = true;
+      pdfStatus.textContent = 'Wybierz paczkę ZIP zawierającą pliki XLSX.';
+      return;
+    }
+    pdfZipFile = file;
+    pdfFileName.textContent = file.name;
+    pdfStatus.textContent = 'Wybrano paczkę: ' + file.name + ' (' +
+      (file.size / 1024 / 1024).toFixed(1) + ' MB).';
+    pdfButton.disabled = false;
+  }
+
+  pdfZipInput.addEventListener('change', () => selectPdfZip(pdfZipInput.files[0]));
+  ['dragenter', 'dragover'].forEach(eventName => {
+    pdfDrop.addEventListener(eventName, event => {
+      event.preventDefault();
+      event.stopPropagation();
+      pdfDrop.classList.add('over');
+    });
+  });
+  ['dragleave', 'drop'].forEach(eventName => {
+    pdfDrop.addEventListener(eventName, event => {
+      event.preventDefault();
+      event.stopPropagation();
+      pdfDrop.classList.remove('over');
+    });
+  });
+  pdfDrop.addEventListener('drop', event => {
+    const file = event.dataTransfer && event.dataTransfer.files &&
+      event.dataTransfer.files.length ? event.dataTransfer.files[0] : null;
+    if (file) selectPdfZip(file);
+  });
+
   pdfButton.addEventListener('click', async () => {
-    if (!sourceFile || !workbook) return;
+    if (!pdfZipFile) return;
     pdfButton.disabled = true;
     runButton.disabled = true;
-    status.textContent = 'Przygotowywanie PDF. Przy pierwszym uruchomieniu serwer może potrzebować chwili na start…';
+    pdfStatus.textContent = 'Konwertowanie plików XLSX do PDF. Przy pierwszym uruchomieniu serwer może potrzebować chwili na start…';
     try {
       const formData = new FormData();
-      formData.append('file', sourceFile, sourceFile.name);
-      formData.append('suffix', suffixInput.value);
+      formData.append('file', pdfZipFile, pdfZipFile.name);
       const response = await fetch(PDF_API_URL, { method: 'POST', body: formData });
       if (!response.ok) {
         let message = 'Serwer zwrócił błąd ' + response.status + '.';
@@ -326,16 +371,16 @@ li{padding:9px 11px;margin-top:6px;border:1px solid #e6eaf0;border-radius:7px;di
       const url = URL.createObjectURL(blob);
       const link = document.createElement('a');
       link.href = url;
-      link.download = cleanName(sourceName) + '_PDF.zip';
+      link.download = pdfZipFile.name.replace(/\.zip$/i, '') + '_PDF.zip';
       document.body.appendChild(link);
       link.click();
       link.remove();
       setTimeout(() => URL.revokeObjectURL(url), 30000);
-      status.textContent = 'Gotowe. Serwer utworzył PDF dla ' + workbook.sheets.length + ' arkuszy i pobrał paczkę ZIP.';
+      pdfStatus.textContent = 'Gotowe. Pliki PDF zostały spakowane do pobranej paczki ZIP.';
     } catch (error) {
-      status.textContent = 'Błąd podczas tworzenia PDF: ' + error.message;
+      pdfStatus.textContent = 'Błąd podczas tworzenia PDF: ' + error.message;
     } finally {
-      pdfButton.disabled = !sourceFile;
+      pdfButton.disabled = !pdfZipFile;
       runButton.disabled = !workbook;
     }
   });
