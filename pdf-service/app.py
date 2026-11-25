@@ -211,4 +211,4 @@ def create_pdf_archive():
 
 @app.errorhandler(413)
 def too_large(_error):
-    return jsonify({"error": "Plik jest za duży. Maksymalny rozmiar to 100 MB."}), 413
+    return jsonify({"error": "Paczka ZIP jest za duża. Maksymalny rozmiar to 100 MB."}), 413
